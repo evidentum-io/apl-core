@@ -12,3 +12,5 @@ pub mod relation;
 pub mod resolver;
 pub mod transformation;
 pub mod verify;
+
+pub use hash::{parse_hash_string, Hash, ParseError, Reference};
