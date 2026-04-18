@@ -2,6 +2,6 @@
 //!
 //! Gated behind the `profile-ai-eval` feature (enabled by default).
 
-pub mod frame;
-pub mod claim;
 pub mod bridge;
+pub mod claim;
+pub mod frame;
