@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "apl-core"
-version = "0.18.2"
+version = "0.19.0"
 dependencies = [
  "atl-core",
  "hex",
