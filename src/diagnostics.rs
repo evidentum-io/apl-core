@@ -447,10 +447,13 @@ pub const APL_VALID: DiagnosticCode = DiagnosticCode::new("apl-valid");
 // apl-spec.md §12.3 — Relation topology markers (single-receipt path)
 // ---------------------------------------------------------------------------
 
-/// Both receipts of a single-receipt pair reference the same frame.
+/// The claim is not cross-frame: either `claim.related_frames` is absent, or
+/// every entry in it equals `claim.frame_ref.hash`.
 ///
-/// Emitted by `verify_receipt` when `claim.related_frames` is empty / absent,
-/// indicating the claim is not part of a cross-frame pair.
+/// Emitted by `verify_receipt` during single-receipt verification as an
+/// informational marker on the relation topology of this claim alone. It is
+/// NOT an outcome over a pair of receipts — pairwise topology markers live
+/// under `APL_SAME_FRAME` / `APL_CROSS_FRAME`.
 pub const SAME_FRAME: DiagnosticCode = DiagnosticCode::new("same-frame");
 /// The receipt references at least one different frame in `related_frames`.
 ///
