@@ -12,6 +12,7 @@ use apl_core::core::relation::RelationQuery;
 use apl_core::diagnostics::{
     DiagnosticCode, APL_ASPECT_REFS_INVALID, APL_ASPECT_REF_OUT_OF_FRAME, APL_FRAME_ASPECT_INVALID,
     APL_STATEMENT_INVALID, APL_SUBJECT_DIGEST_INVALID, APL_SUBJECT_ID_INVALID, APL_SUBJECT_INVALID,
+    APL_SUBJECT_MISSING,
 };
 use apl_core::profile::trait_def::{BridgeCheckResult, ProfileCheckResult, ProfileFailure};
 use apl_core::FailureClass;
@@ -210,20 +211,24 @@ fn check_subject(claim: &Claim) -> ProfileCheckResult {
         )
     })?;
 
-    // §4.2 — id, if present, MUST be a non-empty string.
-    if let Some(id_v) = subj.get("id") {
-        let s = id_v.as_str().ok_or_else(|| {
-            profile_err(
-                FailureClass::ClaimStructureFailure,
-                vec![APL_SUBJECT_ID_INVALID],
-            )
-        })?;
-        if s.is_empty() {
-            return Err(profile_err(
-                FailureClass::ClaimStructureFailure,
-                vec![APL_SUBJECT_ID_INVALID],
-            ));
-        }
+    // §4.1 — id REQUIRED and MUST be a non-empty string.
+    let id_v = subj.get("id").ok_or_else(|| {
+        profile_err(
+            FailureClass::ClaimStructureFailure,
+            vec![APL_SUBJECT_MISSING],
+        )
+    })?;
+    let s = id_v.as_str().ok_or_else(|| {
+        profile_err(
+            FailureClass::ClaimStructureFailure,
+            vec![APL_SUBJECT_ID_INVALID],
+        )
+    })?;
+    if s.is_empty() {
+        return Err(profile_err(
+            FailureClass::ClaimStructureFailure,
+            vec![APL_SUBJECT_ID_INVALID],
+        ));
     }
 
     // §4.2 — optional string fields MUST be non-empty when present.
@@ -372,10 +377,11 @@ fn profile_err(failure_class: FailureClass, diagnostics: Vec<DiagnosticCode>) ->
 mod claim_tests {
     use super::*;
     use crate::profile::AiEvalProfile;
-    use apl_core::core::claim::Claim;
+    use apl_core::core::claim::{Claim, ClaimInner, ClaimKind, Statement, Subject};
+    use apl_core::core::hash::{Hash, Reference};
     use apl_core::diagnostics::{
         APL_ASPECT_REFS_INVALID, APL_STATEMENT_INVALID, APL_SUBJECT_DIGEST_INVALID,
-        APL_SUBJECT_INVALID,
+        APL_SUBJECT_ID_INVALID, APL_SUBJECT_INVALID, APL_SUBJECT_MISSING,
     };
     use apl_core::profile::trait_def::Profile;
     use apl_core::FailureClass;
@@ -633,6 +639,111 @@ mod claim_tests {
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
         assert!(err.diagnostics.contains(&APL_SUBJECT_DIGEST_INVALID));
+    }
+
+    // §4.1: subject.id absent → ClaimStructureFailure + AplSubjectMissing.
+    //
+    // Core accepts a subject that has `digest` (core-level field) but no `id`.
+    // AI-Eval additionally requires `id` as a mandatory field, so the profile
+    // check must reject it with APL_SUBJECT_MISSING rather than silently
+    // passing the claim.
+    #[test]
+    fn rejects_subject_without_id_as_absent() {
+        let v = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": {
+                    "type": "model-build",
+                    "digest": h(0x11),
+                    "artifact_digest": h(0x42)
+                },
+                "aspect_refs": ["accuracy"],
+                "statement": {
+                    "predicate": "score",
+                    "content": {
+                        "benchmark_id": "mmlu",
+                        "metric_id": "accuracy",
+                        "value": 0.5,
+                        "unit": "fraction"
+                    }
+                }
+            },
+            "frame_ref": { "hash": h(0x11) }
+        });
+        let c = Claim::parse(&v).expect("claim must parse at core level");
+        let err = AiEvalProfile.check_claim(&c).unwrap_err();
+        assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
+        assert!(err.diagnostics.contains(&APL_SUBJECT_MISSING));
+        assert!(!err.diagnostics.contains(&APL_SUBJECT_ID_INVALID));
+    }
+
+    /// Build a `Claim` directly from a hand-crafted subject map, bypassing
+    /// `Claim::parse`. This lets tests reach the defensive `id` branches in
+    /// `check_subject` that Core already gates at parse time.
+    fn claim_with_raw_subject(subject_map: serde_json::Map<String, serde_json::Value>) -> Claim {
+        Claim {
+            version: "0.1".to_owned(),
+            frame_ref: Reference {
+                hash: Hash::from_bytes([0x11u8; 32]),
+                resolver_hint: None,
+            },
+            bridge_refs: None,
+            transformation_refs: None,
+            claim: ClaimInner {
+                kind: ClaimKind::Observation,
+                subject: Subject {
+                    id: None,
+                    digest: None,
+                    full: subject_map,
+                },
+                aspect_refs: vec!["accuracy".to_owned()],
+                statement: Statement {
+                    predicate: "score".to_owned(),
+                    content: json!({
+                        "benchmark_id": "mmlu",
+                        "metric_id": "accuracy",
+                        "value": 0.5,
+                        "unit": "fraction"
+                    }),
+                },
+                related_frames: None,
+            },
+        }
+    }
+
+    // §4.1: subject.id present as a non-string (integer) → ClaimStructureFailure + AplSubjectIdInvalid.
+    //
+    // Core rejects `subject.id` that is not a non-empty string at parse time, so
+    // this branch in `check_subject` is defensive. The test reaches it by
+    // constructing a `Claim` directly, bypassing `Claim::parse`.
+    #[test]
+    fn rejects_subject_id_non_string() {
+        let mut map = serde_json::Map::new();
+        map.insert("type".to_owned(), json!("model-build"));
+        map.insert("id".to_owned(), json!(42));
+        map.insert("artifact_digest".to_owned(), json!(h(0x42)));
+        let claim = claim_with_raw_subject(map);
+        let err = check_subject(&claim).unwrap_err();
+        assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
+        assert!(err.diagnostics.contains(&APL_SUBJECT_ID_INVALID));
+    }
+
+    // §4.1: subject.id present as an empty string → ClaimStructureFailure + AplSubjectIdInvalid.
+    //
+    // Core rejects `subject.id` that is not a non-empty string at parse time, so
+    // this branch in `check_subject` is defensive. The test reaches it by
+    // constructing a `Claim` directly, bypassing `Claim::parse`.
+    #[test]
+    fn rejects_subject_id_empty_string() {
+        let mut map = serde_json::Map::new();
+        map.insert("type".to_owned(), json!("model-build"));
+        map.insert("id".to_owned(), json!(""));
+        map.insert("artifact_digest".to_owned(), json!(h(0x42)));
+        let claim = claim_with_raw_subject(map);
+        let err = check_subject(&claim).unwrap_err();
+        assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
+        assert!(err.diagnostics.contains(&APL_SUBJECT_ID_INVALID));
     }
 
     // AC7: unit not in allowed set.
