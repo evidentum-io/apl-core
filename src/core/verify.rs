@@ -2,13 +2,18 @@
 //!
 //! The entry point is [`verify_receipt`], which takes opaque carrier bytes, a
 //! [`CarrierVerifier`], a [`FrameResolver`], a [`BridgeResolver`], and an
-//! optional [`Profile`], and returns a [`VerifierOutput`].
+//! optional [`Profile`], and returns a tuple
+//! `(VerifierOutput, Option<VerifiedReceipt>)`. The `VerifiedReceipt` is
+//! `Some(token)` only when `VerifierOutput::core_outcome == AplValid`, and is
+//! the opaque proof required by `ReceiptInput::Prevalidated` in
+//! [`crate::core::evaluate::evaluate_relation`].
 //!
 //! # Determinism Contract
 //!
 //! For the same inputs (receipt bytes, carrier verifier, frame resolver, bridge
-//! resolver, profile), this function MUST produce the same [`VerifierOutput`].
-//! All state is function-local; no mutable globals, no I/O.
+//! resolver, profile), this function MUST produce the same tuple
+//! `(VerifierOutput, Option<VerifiedReceipt>)`. All state is function-local;
+//! no mutable globals, no I/O.
 //!
 //! # Early-Abort Rule (`apl-spec.md §15.1`)
 //!
