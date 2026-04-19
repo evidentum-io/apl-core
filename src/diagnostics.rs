@@ -12,7 +12,9 @@
 //! values they know and ignore unknown codes via the catch-all `_` arm
 //! (or comparison with the named constants in this module).
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,12 +35,17 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Deserialization
 ///
-/// Deserializes from a JSON string by leaking a `Box<str>` to obtain a
-/// `&'static str`. This is intentional: `DiagnosticCode` constants are all
-/// `'static`, and deserialization is only used for round-trip testing and
-/// for reading outputs produced by this crate. The leak is bounded by the
-/// number of distinct code strings observed at runtime, which is small and
-/// finite.
+/// Deserialization intern-looks-up the incoming string in a process-wide
+/// table. The first sighting of a given code leaks its bytes to produce
+/// a `&'static str`; all subsequent sightings of the same code reuse the
+/// cached pointer. Total leaked memory is bounded by the number of
+/// DISTINCT codes ever deserialized, which is small in practice (the
+/// protocol has ~80 canonical codes and profiles add a handful more).
+///
+/// The intern table survives the lifetime of the process. It is not a
+/// cache that can be flushed; this is intentional — `DiagnosticCode`
+/// requires `'static` references, and the intern semantics preserve
+/// equality (two deserialized instances of "apl-valid" are pointer-equal).
 ///
 /// # Ordering
 ///
@@ -123,15 +130,34 @@ impl Serialize for DiagnosticCode {
     }
 }
 
+/// Returns a `&'static str` for `s`, interning it in a process-wide table on
+/// first sight.
+///
+/// The first call for a given string allocates and leaks exactly one
+/// `Box<str>`. All subsequent calls with the same content return the cached
+/// pointer without any allocation. Total leaked memory is therefore bounded
+/// by the number of DISTINCT strings ever passed, not by call count.
+fn intern_diagnostic(s: &str) -> &'static str {
+    static INTERN: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let intern = INTERN.get_or_init(|| Mutex::new(HashMap::new()));
+    // A poisoned mutex here would mean a previous thread panicked while holding
+    // the lock. Propagating the poison is the correct behavior — the intern
+    // table may be in an inconsistent state.
+    let mut map = intern
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&existing) = map.get(s) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    map.insert(leaked.to_owned(), leaked);
+    leaked
+}
+
 impl<'de> Deserialize<'de> for DiagnosticCode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        // Leak the string to obtain a `&'static str`. The set of distinct
-        // diagnostic codes observed at runtime is small and finite, so the
-        // total allocation is bounded. This is the only way to satisfy the
-        // `&'static str` invariant without switching the inner field type.
-        let leaked: &'static str = Box::leak(s.into_boxed_str());
-        Ok(Self(leaked))
+        Ok(Self(intern_diagnostic(&s)))
     }
 }
 
@@ -425,5 +451,47 @@ mod tests {
     fn diagnostic_code_display() {
         assert_eq!(format!("{}", APL_VALID), "apl-valid");
         assert_eq!(format!("{}", FAILURE_CARRIER), "failure-carrier");
+    }
+
+    #[test]
+    fn deserialize_same_code_twice_shares_pointer() {
+        let a: DiagnosticCode =
+            serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
+        let b: DiagnosticCode =
+            serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
+        assert!(
+            std::ptr::eq(a.as_str(), b.as_str()),
+            "two deserializations of the same code must return pointer-identical &'static str"
+        );
+    }
+
+    #[test]
+    fn deserialize_different_codes_get_different_pointers() {
+        let a: DiagnosticCode =
+            serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
+        let b: DiagnosticCode =
+            serde_json::from_str(r#""carrier-valid""#).expect("deserialization must succeed");
+        assert!(
+            !std::ptr::eq(a.as_str(), b.as_str()),
+            "two deserializations of distinct codes must return different pointers"
+        );
+    }
+
+    #[test]
+    fn deserialize_roundtrip_through_json() {
+        use crate::core::output::{CoreOutcome, RelationOutcome, VerifierOutput};
+
+        let original = VerifierOutput {
+            core_outcome: CoreOutcome::AplValid,
+            relation_outcome: RelationOutcome::RelationNotEvaluated,
+            failure_classes: vec![],
+            diagnostics: vec![APL_VALID, CARRIER_VALID, APL_FRAME_BOUND],
+        };
+
+        let json = serde_json::to_string(&original).expect("serialization must succeed");
+        let roundtripped: VerifierOutput =
+            serde_json::from_str(&json).expect("deserialization must succeed");
+
+        assert_eq!(original, roundtripped);
     }
 }
