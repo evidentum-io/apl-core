@@ -1,3 +1,1986 @@
-//! 14-step single-receipt verification algorithm per apl-spec.md §11.
+//! 14-step single-receipt verification algorithm per `apl-spec.md §11`.
 //!
-//! Implementation pending.
+//! The entry point is [`verify_receipt`], which takes opaque carrier bytes, a
+//! [`CarrierVerifier`], a [`FrameResolver`], a [`BridgeResolver`], and an
+//! optional [`Profile`], and returns a [`VerifierOutput`].
+//!
+//! # Determinism Contract
+//!
+//! For the same inputs (receipt bytes, carrier verifier, frame resolver, bridge
+//! resolver, profile), this function MUST produce the same [`VerifierOutput`].
+//! All state is function-local; no mutable globals, no I/O.
+//!
+//! # Early-Abort Rule (`apl-spec.md §15.1`)
+//!
+//! If the carrier is invalid, the verifier MUST return `apl-invalid` with
+//! [`FailureClass::CarrierFailure`] and MUST NOT continue APL validation.
+
+use crate::core::carrier::{CarrierOutcome, CarrierVerifier};
+use crate::core::claim::{Claim, ClaimParseError};
+use crate::core::frame::{Frame, FrameParseError};
+use crate::core::jcs::canonical_hash;
+use crate::core::output::{CoreOutcome, RelationOutcome, VerifierOutput};
+use crate::core::resolver::{BridgeResolver, FrameResolution, FrameResolver};
+use crate::diagnostics::Diagnostic;
+use crate::failure::FailureClass;
+use crate::profile::trait_def::Profile;
+
+/// Verify a single APL Receipt per `apl-spec.md §11`.
+///
+/// Executes all 14 normative steps in order. The function is pure with respect
+/// to its inputs and performs no I/O.
+///
+/// # Arguments
+///
+/// * `receipt_bytes` — opaque carrier-encoded bytes. apl-core does not
+///   interpret them; the bytes are forwarded to `carrier.verify_carrier`.
+/// * `carrier` — carrier verifier per `§15.1`. Caller-supplied.
+/// * `frames` — frame resolver per `§9.5`, `§16.2`.
+/// * `bridges` — bridge resolver per `apl-relation-spec.md §5`. Not used by
+///   single-receipt verification itself; retained in the signature for
+///   symmetry with the pairwise API (RELATION-1) and so callers can thread a
+///   single set of resolvers through both APIs.
+/// * `profile` — optional vertical profile. If `Some`, its `check_claim`,
+///   `check_frame`, and `cross_check` hooks are invoked after core checks
+///   succeed (between steps 8 and 9).
+///
+/// # Returns
+///
+/// A [`VerifierOutput`] whose `relation_outcome` is always
+/// `RelationNotEvaluated` (single-receipt mode). Failure classes and
+/// diagnostics are populated per `§10` and `§12.3`.
+///
+/// # Purity
+///
+/// This function is pure relative to its inputs. It performs NO I/O.
+pub fn verify_receipt(
+    receipt_bytes: &[u8],
+    carrier: &dyn CarrierVerifier,
+    frames: &dyn FrameResolver,
+    _bridges: &dyn BridgeResolver,
+    profile: Option<&dyn Profile>,
+) -> VerifierOutput {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // ========== STEP 1 — carrier verification (§11.1, §15.1) ==========
+    let carrier_result = carrier.verify_carrier(receipt_bytes);
+    let metadata = match carrier_result {
+        CarrierOutcome::Invalid { .. } => {
+            return mk_invalid(
+                FailureClass::CarrierFailure,
+                vec![Diagnostic::CarrierInvalid, Diagnostic::FailureCarrier],
+            );
+        }
+        CarrierOutcome::Valid { metadata, .. } => {
+            diagnostics.push(Diagnostic::CarrierValid);
+            metadata
+        }
+    };
+
+    // ========== STEP 2 — extract metadata.apl (§11.2, §15.2) ==========
+    let apl_v = match metadata.as_object().and_then(|m| m.get("apl")) {
+        Some(v) => v.clone(),
+        None => {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                FailureClass::ClaimStructureFailure,
+                vec![Diagnostic::AplMissing, Diagnostic::FailureClaimStructure],
+            );
+        }
+    };
+    diagnostics.push(Diagnostic::AplPresent);
+
+    // ========== STEPS 3+4 — claim structure & frame_ref.hash (§11.3, §11.4) ==========
+    let claim = match Claim::parse(&apl_v) {
+        Ok(c) => c,
+        Err(e) => {
+            let (fc, diag_tail) = map_claim_parse_error(e);
+            return mk_invalid_with_prefix(diagnostics, fc, diag_tail);
+        }
+    };
+    diagnostics.push(Diagnostic::AplFrameBound);
+
+    // ========== STEP 5 — resolve frame (§11.5, §16.2) ==========
+    let frame_value = match frames.resolve(&claim.frame_ref.hash) {
+        FrameResolution::Found(v) => v,
+        FrameResolution::NotFound | FrameResolution::ResolverError(_) => {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                FailureClass::FrameFailure,
+                vec![Diagnostic::AplFrameUnresolved, Diagnostic::FailureFrame],
+            );
+        }
+    };
+
+    // ========== STEP 6 — hash match (§11.6, §9.5) ==========
+    let actual = canonical_hash(&frame_value);
+    if actual != claim.frame_ref.hash {
+        return mk_invalid_with_prefix(
+            diagnostics,
+            FailureClass::FrameFailure,
+            vec![Diagnostic::AplFrameHashMismatch, Diagnostic::FailureFrame],
+        );
+    }
+
+    // ========== STEP 7 — parse frame + kernel check (§11.7, §10.4) ==========
+    let frame = match Frame::parse(&frame_value) {
+        Ok(f) => f,
+        Err(e) => {
+            let (fc, diag_tail) = map_frame_parse_error(e);
+            return mk_invalid_with_prefix(diagnostics, fc, diag_tail);
+        }
+    };
+
+    // ========== STEP 8 — aspect linkage (§11.8, §9.7) ==========
+    for aspect in &claim.claim.aspect_refs {
+        if !frame.has_aspect(aspect) {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                FailureClass::SemanticLinkageFailure,
+                vec![
+                    Diagnostic::AplAspectRefOutOfFrame,
+                    Diagnostic::FailureSemanticLinkage,
+                ],
+            );
+        }
+    }
+
+    // ========== Profile hooks (§9.10) ==========
+    // Order: check_claim → check_frame → cross_check.
+    // Each short-circuits on Err; subsequent hooks are not invoked.
+    if let Some(p) = profile {
+        // STEP 8.5 — claim-alone check
+        if let Err(profile_failure) = p.check_claim(&claim) {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                profile_failure.failure_class,
+                profile_failure.diagnostics,
+            );
+        }
+        // STEP 8.6 — frame-alone check
+        if let Err(profile_failure) = p.check_frame(&frame) {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                profile_failure.failure_class,
+                profile_failure.diagnostics,
+            );
+        }
+        // STEP 8.7 — joint claim+frame check
+        if let Err(profile_failure) = p.cross_check(&claim, &frame) {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                profile_failure.failure_class,
+                profile_failure.diagnostics,
+            );
+        }
+    }
+
+    // ========== STEP 9 — relation-layer structural conformance (§11.9) ==========
+    // Already enforced inside Claim::parse; no extra work here.
+
+    // ========== STEP 10 — core outcome (§11.10) ==========
+    diagnostics.push(Diagnostic::AplValid);
+
+    // ========== STEP 11 — cross-frame detection (§11.11, §5.9) ==========
+    if claim.is_cross_frame() {
+        diagnostics.push(Diagnostic::CrossFrame);
+    } else {
+        diagnostics.push(Diagnostic::SameFrame);
+    }
+
+    // ========== STEP 12 — bridge MAY be checked (§11.12) ==========
+    // Single-receipt mode does not evaluate bridge applicability.
+
+    // ========== STEP 13 — transformation declaration (§11.13, §8.3) ==========
+    if claim.transformation_refs.is_some() {
+        diagnostics.push(Diagnostic::TransformationDeclared);
+    } else {
+        diagnostics.push(Diagnostic::TransformationMissing);
+    }
+
+    // ========== STEP 14 — return (§11.14) ==========
+    VerifierOutput {
+        core_outcome: CoreOutcome::AplValid,
+        relation_outcome: RelationOutcome::RelationNotEvaluated,
+        failure_classes: Vec::new(),
+        diagnostics,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+fn mk_invalid(class: FailureClass, diagnostics: Vec<Diagnostic>) -> VerifierOutput {
+    VerifierOutput {
+        core_outcome: CoreOutcome::AplInvalid,
+        relation_outcome: RelationOutcome::RelationNotEvaluated,
+        failure_classes: vec![class],
+        diagnostics,
+    }
+}
+
+fn mk_invalid_with_prefix(
+    mut prefix: Vec<Diagnostic>,
+    class: FailureClass,
+    tail: Vec<Diagnostic>,
+) -> VerifierOutput {
+    prefix.extend(tail);
+    VerifierOutput {
+        core_outcome: CoreOutcome::AplInvalid,
+        relation_outcome: RelationOutcome::RelationNotEvaluated,
+        failure_classes: vec![class],
+        diagnostics: prefix,
+    }
+}
+
+fn map_claim_parse_error(e: ClaimParseError) -> (FailureClass, Vec<Diagnostic>) {
+    use ClaimParseError as E;
+    use Diagnostic as D;
+    use FailureClass as F;
+    match e {
+        E::MetadataAplMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplMissing, D::FailureClaimStructure],
+        ),
+        E::VersionMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplVersionMissing, D::FailureClaimStructure],
+        ),
+        E::VersionInvalid | E::VersionUnsupported { .. } => (
+            F::ClaimStructureFailure,
+            vec![D::AplVersionUnsupported, D::FailureClaimStructure],
+        ),
+        E::ClaimMissing | E::ClaimNotObject => (
+            F::ClaimStructureFailure,
+            vec![D::AplClaimMissing, D::FailureClaimStructure],
+        ),
+        E::ClaimKindMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplClaimKindMissing, D::FailureClaimStructure],
+        ),
+        E::ClaimKindUnsupported { .. } => (
+            F::ClaimStructureFailure,
+            vec![D::AplClaimKindUnsupported, D::FailureClaimStructure],
+        ),
+        E::SubjectMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplSubjectMissing, D::FailureClaimStructure],
+        ),
+        E::SubjectInvalid | E::SubjectMissingIdAndDigest => (
+            F::ClaimStructureFailure,
+            vec![D::AplSubjectInvalid, D::FailureClaimStructure],
+        ),
+        E::SubjectIdInvalid => (
+            F::ClaimStructureFailure,
+            vec![D::AplSubjectIdInvalid, D::FailureClaimStructure],
+        ),
+        E::SubjectDigestInvalid => (
+            F::ClaimStructureFailure,
+            vec![D::AplSubjectDigestInvalid, D::FailureClaimStructure],
+        ),
+        E::AspectRefsMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplAspectRefsMissing, D::FailureClaimStructure],
+        ),
+        E::AspectRefsInvalid => (
+            F::ClaimStructureFailure,
+            vec![D::AplAspectRefsInvalid, D::FailureClaimStructure],
+        ),
+        E::StatementMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplStatementMissing, D::FailureClaimStructure],
+        ),
+        E::StatementInvalid => (
+            F::ClaimStructureFailure,
+            vec![D::AplStatementInvalid, D::FailureClaimStructure],
+        ),
+        E::PredicateMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplPredicateMissing, D::FailureClaimStructure],
+        ),
+        E::ContentMissing => (
+            F::ClaimStructureFailure,
+            vec![D::AplContentMissing, D::FailureClaimStructure],
+        ),
+        E::FrameRefMissing | E::FrameRefInvalid => (
+            F::ReferenceFailure,
+            vec![D::AplFrameRefInvalid, D::FailureReference],
+        ),
+        E::RelatedFramesInvalid => (
+            F::RelationStructureFailure,
+            vec![D::AplRelatedFramesInvalid, D::FailureRelationStructure],
+        ),
+        E::BridgeRefsInvalid => (
+            F::RelationStructureFailure,
+            vec![D::AplBridgeRefsInvalid, D::FailureRelationStructure],
+        ),
+        E::TransformationRefsInvalid => (
+            F::RelationStructureFailure,
+            vec![D::AplTransformationRefsInvalid, D::FailureRelationStructure],
+        ),
+    }
+}
+
+fn map_frame_parse_error(e: FrameParseError) -> (FailureClass, Vec<Diagnostic>) {
+    use Diagnostic as D;
+    use FailureClass as F;
+    use FrameParseError as E;
+    match e {
+        E::FrameNotObject | E::FrameKernelValueInvalid | E::FrameExtendsInvalid => (
+            F::FrameFailure,
+            vec![D::AplFrameKernelMissing, D::FailureFrame],
+        ),
+        E::FrameVersionMissing => (
+            F::FrameFailure,
+            vec![D::AplFrameVersionMissing, D::FailureFrame],
+        ),
+        E::FrameVersionUnsupported { .. } => (
+            F::FrameFailure,
+            vec![D::AplFrameVersionUnsupported, D::FailureFrame],
+        ),
+        E::FrameObserverInvalid => (
+            F::FrameFailure,
+            vec![D::AplFrameObserverInvalid, D::FailureFrame],
+        ),
+        E::FrameAspectInvalid => (
+            F::FrameFailure,
+            vec![D::AplFrameAspectInvalid, D::FailureFrame],
+        ),
+        E::FrameInvarianceInvalid => (
+            F::FrameFailure,
+            vec![D::AplFrameInvarianceInvalid, D::FailureFrame],
+        ),
+        E::FrameExclusionsInvalid => (
+            F::FrameFailure,
+            vec![D::AplFrameExclusionsInvalid, D::FailureFrame],
+        ),
+        E::FrameProcedureOrInstrumentMissing => (
+            F::FrameFailure,
+            vec![D::AplFrameProcedureOrInstrumentMissing, D::FailureFrame],
+        ),
+        E::FrameScopeOrResolutionMissing => (
+            F::FrameFailure,
+            vec![D::AplFrameScopeOrResolutionMissing, D::FailureFrame],
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::core::resolver::{InMemoryBridgeResolver, InMemoryFrameResolver};
+    use crate::profile::trait_def::{ProfileCheckResult, ProfileFailure};
+
+    // ---- Fixtures ----
+
+    fn h(b: u8) -> String {
+        format!("sha256:{}", hex::encode([b; 32]))
+    }
+
+    struct StubCarrier {
+        outcome: CarrierOutcome,
+    }
+
+    impl CarrierVerifier for StubCarrier {
+        fn verify_carrier(&self, _: &[u8]) -> CarrierOutcome {
+            self.outcome.clone()
+        }
+    }
+
+    fn stub_valid(metadata: serde_json::Value) -> StubCarrier {
+        StubCarrier {
+            outcome: CarrierOutcome::Valid {
+                payload: vec![],
+                metadata,
+            },
+        }
+    }
+
+    fn stub_invalid() -> StubCarrier {
+        StubCarrier {
+            outcome: CarrierOutcome::Invalid { reason: None },
+        }
+    }
+
+    fn valid_frame_value() -> serde_json::Value {
+        json!({
+            "version": "0.1",
+            "observer": "acme-eval-runner",
+            "procedure": "benchmark-run",
+            "aspect": ["accuracy"],
+            "scope": "mmlu/dev",
+            "invariance": ["score-object-serialization"],
+            "exclusions": [
+                "no-production-readiness-claim",
+                "no-deployment-safety-claim",
+                "no-out-of-scope-generalization-claim"
+            ]
+        })
+    }
+
+    // ---- AC1: carrier failure early-aborts ----
+
+    #[test]
+    fn ac1_step1_carrier_invalid_returns_carrier_failure() {
+        let carrier = stub_invalid();
+        let frames = InMemoryFrameResolver::new();
+        let bridges = InMemoryBridgeResolver::new();
+        let out = verify_receipt(&[], &carrier, &frames, &bridges, None);
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(out.failure_classes, vec![FailureClass::CarrierFailure]);
+        assert_eq!(
+            out.diagnostics,
+            vec![Diagnostic::CarrierInvalid, Diagnostic::FailureCarrier]
+        );
+        assert!(!out.diagnostics.contains(&Diagnostic::AplPresent));
+    }
+
+    // ---- AC2: metadata.apl missing ----
+
+    #[test]
+    fn ac2_step2_metadata_apl_missing() {
+        let carrier = stub_valid(json!({}));
+        let frames = InMemoryFrameResolver::new();
+        let bridges = InMemoryBridgeResolver::new();
+        let out = verify_receipt(&[], &carrier, &frames, &bridges, None);
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert_eq!(out.diagnostics[0], Diagnostic::CarrierValid);
+        assert!(out.diagnostics.contains(&Diagnostic::AplMissing));
+    }
+
+    // ---- AC3: frame_ref missing ----
+
+    #[test]
+    fn ac3_step3_missing_frame_ref() {
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["a"],
+                "statement": { "predicate": "p", "content": 1 }
+            }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.failure_classes, vec![FailureClass::ReferenceFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameRefInvalid));
+    }
+
+    // ---- AC4: frame not resolved ----
+
+    #[test]
+    fn ac4_step5_frame_not_found() {
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": h(0xaa) }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameUnresolved));
+    }
+
+    // ---- AC5: hash mismatch ----
+
+    #[test]
+    fn ac5_step6_hash_mismatch() {
+        let mut frames = InMemoryFrameResolver::new();
+        let v = valid_frame_value();
+        let wrong_hash_str = h(0xaa);
+        let wrong_hash =
+            crate::core::hash::parse_hash_string(&wrong_hash_str).expect("valid hash string");
+        frames.insert_raw(wrong_hash, v.clone());
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": wrong_hash_str }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameHashMismatch));
+    }
+
+    // ---- AC6: frame kernel failure ----
+
+    #[test]
+    fn ac6_step7_frame_kernel_missing_procedure_and_instrument() {
+        let mut frames = InMemoryFrameResolver::new();
+        let v = json!({
+            "version": "0.1",
+            "observer": "o",
+            "aspect": ["accuracy"],
+            "scope": "s",
+            "invariance": ["i"],
+            "exclusions": ["e"]
+        });
+        let frame_hash = frames.insert(v);
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameProcedureOrInstrumentMissing));
+    }
+
+    // ---- AC7: aspect linkage failure ----
+
+    #[test]
+    fn ac7_step8_aspect_ref_out_of_frame() {
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["judge-score"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::SemanticLinkageFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplAspectRefOutOfFrame));
+    }
+
+    // ---- AC8: happy path ----
+
+    #[test]
+    fn ac8_happy_path_apl_valid() {
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "model:acme-gpt-7b-build-42" },
+                "aspect_refs": ["accuracy"],
+                "statement": {
+                    "predicate": "score",
+                    "content": { "benchmark": "MMLU", "value": 0.781, "unit": "fraction" }
+                }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplValid);
+        assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
+        assert!(out.failure_classes.is_empty());
+
+        let expected = [
+            Diagnostic::CarrierValid,
+            Diagnostic::AplPresent,
+            Diagnostic::AplFrameBound,
+            Diagnostic::AplValid,
+            Diagnostic::SameFrame,
+            Diagnostic::TransformationMissing,
+        ];
+        for d in expected {
+            assert!(out.diagnostics.contains(&d), "missing {d:?}");
+        }
+    }
+
+    // ---- AC9: cross-frame diagnostic ----
+
+    #[test]
+    fn ac9_cross_frame_diagnostic_when_related_frames_differs() {
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let other = h(0x99);
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 },
+                "related_frames": [other]
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert!(out.diagnostics.contains(&Diagnostic::CrossFrame));
+        assert!(!out.diagnostics.contains(&Diagnostic::SameFrame));
+    }
+
+    // ---- AC10: transformation declared ----
+
+    #[test]
+    fn ac10_transformation_declared_diagnostic() {
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() },
+            "transformation_refs": [{ "hash": h(0x77) }]
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::TransformationDeclared));
+        assert!(!out.diagnostics.contains(&Diagnostic::TransformationMissing));
+    }
+
+    // ---- AC11: never panics ----
+
+    #[test]
+    fn ac11_never_panics_on_garbage_metadata() {
+        let carrier = stub_valid(json!("scalar-value"));
+        let out = verify_receipt(
+            b"any-bytes",
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert!(out.diagnostics.contains(&Diagnostic::AplMissing));
+    }
+
+    #[test]
+    fn ac11_never_panics_on_null_metadata() {
+        let carrier = stub_valid(json!(null));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+    }
+
+    #[test]
+    fn ac11_never_panics_on_empty_bytes() {
+        let out = verify_receipt(
+            &[],
+            &stub_invalid(),
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+    }
+
+    // ---- AC12: determinism ----
+
+    #[test]
+    fn ac12_deterministic_output() {
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+
+        let o1 = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let o2 = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(o1, o2);
+    }
+
+    // ---- AC13: diagnostic ordering ----
+
+    #[test]
+    fn ac13_diagnostic_ordering_on_happy_path() {
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+
+        let diags = &out.diagnostics;
+        let pos = |d: Diagnostic| diags.iter().position(|x| *x == d).expect("present");
+
+        assert!(pos(Diagnostic::CarrierValid) < pos(Diagnostic::AplPresent));
+        assert!(pos(Diagnostic::AplPresent) < pos(Diagnostic::AplFrameBound));
+        assert!(pos(Diagnostic::AplFrameBound) < pos(Diagnostic::AplValid));
+        assert!(pos(Diagnostic::AplValid) < pos(Diagnostic::SameFrame));
+        assert!(pos(Diagnostic::SameFrame) < pos(Diagnostic::TransformationMissing));
+    }
+
+    // ---- AC14: profile hook failure preserves prior diagnostics ----
+
+    #[test]
+    fn ac14_profile_failure_preserves_prior_diagnostics() {
+        struct AlwaysFailClaim;
+
+        impl Profile for AlwaysFailClaim {
+            fn id(&self) -> &'static str {
+                "always-fail-claim"
+            }
+
+            fn check_claim(&self, _: &Claim) -> ProfileCheckResult {
+                Err(ProfileFailure {
+                    failure_class: FailureClass::ClaimStructureFailure,
+                    diagnostics: vec![Diagnostic::AplClaimKindUnsupported],
+                })
+            }
+        }
+
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let p = AlwaysFailClaim;
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &frames,
+            &InMemoryBridgeResolver::new(),
+            Some(&p),
+        );
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplClaimKindUnsupported));
+        assert!(out.diagnostics.contains(&Diagnostic::CarrierValid));
+        assert!(out.diagnostics.contains(&Diagnostic::AplPresent));
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameBound));
+    }
+
+    // ---- AC15: cross_check invoked after both check_claim and check_frame pass ----
+
+    #[test]
+    fn ac15_profile_cross_check_invoked_and_fails() {
+        struct CrossOnlyReject;
+
+        impl Profile for CrossOnlyReject {
+            fn id(&self) -> &'static str {
+                "cross-only-reject"
+            }
+
+            fn cross_check(&self, _c: &Claim, _f: &Frame) -> ProfileCheckResult {
+                Err(ProfileFailure {
+                    failure_class: FailureClass::SemanticLinkageFailure,
+                    diagnostics: vec![Diagnostic::AplAspectRefOutOfFrame],
+                })
+            }
+        }
+
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let bridges = InMemoryBridgeResolver::new();
+        let p = CrossOnlyReject;
+        let out = verify_receipt(&[], &carrier, &frames, &bridges, Some(&p));
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::SemanticLinkageFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplAspectRefOutOfFrame));
+        assert!(out.diagnostics.contains(&Diagnostic::CarrierValid));
+        assert!(out.diagnostics.contains(&Diagnostic::AplPresent));
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameBound));
+    }
+
+    // ---- AC16: short-circuit when check_claim fails ----
+
+    #[test]
+    fn ac16_check_claim_fails_short_circuits_remaining_hooks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingProfile {
+            frame_calls: Arc<AtomicUsize>,
+            cross_calls: Arc<AtomicUsize>,
+        }
+
+        impl Profile for CountingProfile {
+            fn id(&self) -> &'static str {
+                "counting"
+            }
+
+            fn check_claim(&self, _: &Claim) -> ProfileCheckResult {
+                Err(ProfileFailure {
+                    failure_class: FailureClass::ClaimStructureFailure,
+                    diagnostics: vec![Diagnostic::AplClaimMissing],
+                })
+            }
+
+            fn check_frame(&self, _: &Frame) -> ProfileCheckResult {
+                self.frame_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn cross_check(&self, _: &Claim, _: &Frame) -> ProfileCheckResult {
+                self.cross_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let frame_calls = Arc::new(AtomicUsize::new(0));
+        let cross_calls = Arc::new(AtomicUsize::new(0));
+        let p = CountingProfile {
+            frame_calls: Arc::clone(&frame_calls),
+            cross_calls: Arc::clone(&cross_calls),
+        };
+
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &frames,
+            &InMemoryBridgeResolver::new(),
+            Some(&p),
+        );
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(
+            frame_calls.load(Ordering::SeqCst),
+            0,
+            "check_frame must not be called"
+        );
+        assert_eq!(
+            cross_calls.load(Ordering::SeqCst),
+            0,
+            "cross_check must not be called"
+        );
+    }
+
+    #[test]
+    fn ac16_check_frame_fails_short_circuits_cross_check() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct FrameFailCrossCount {
+            cross_calls: Arc<AtomicUsize>,
+        }
+
+        impl Profile for FrameFailCrossCount {
+            fn id(&self) -> &'static str {
+                "frame-fail-cross-count"
+            }
+
+            fn check_frame(&self, _: &Frame) -> ProfileCheckResult {
+                Err(ProfileFailure {
+                    failure_class: FailureClass::FrameFailure,
+                    diagnostics: vec![Diagnostic::AplFrameKernelMissing],
+                })
+            }
+
+            fn cross_check(&self, _: &Claim, _: &Frame) -> ProfileCheckResult {
+                self.cross_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let cross_calls = Arc::new(AtomicUsize::new(0));
+        let p = FrameFailCrossCount {
+            cross_calls: Arc::clone(&cross_calls),
+        };
+
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &frames,
+            &InMemoryBridgeResolver::new(),
+            Some(&p),
+        );
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(
+            cross_calls.load(Ordering::SeqCst),
+            0,
+            "cross_check must not be called"
+        );
+    }
+
+    // ---- AC17: version missing yields AplVersionMissing ----
+
+    #[test]
+    fn ac17_version_missing_yields_apl_version_missing() {
+        let apl = json!({
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["a"],
+                "statement": { "predicate": "p", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x11) }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplVersionMissing));
+        assert!(!out.diagnostics.contains(&Diagnostic::AplClaimMissing));
+        assert!(!out.diagnostics.contains(&Diagnostic::AplVersionUnsupported));
+    }
+
+    // ---- Resolver error treated as frame failure ----
+
+    #[test]
+    fn resolver_error_returns_frame_failure() {
+        struct ErroringResolver;
+
+        impl FrameResolver for ErroringResolver {
+            fn resolve(&self, _: &crate::core::hash::Hash) -> FrameResolution {
+                FrameResolution::ResolverError("registry timeout".into())
+            }
+        }
+
+        let apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": h(0xbb) }
+        });
+        let carrier = stub_valid(json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &ErroringResolver,
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameUnresolved));
+    }
+
+    // ---- ClaimParseError coverage: every map_claim_parse_error arm ----
+
+    fn minimal_claim_body() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "observation",
+            "subject": { "id": "x" },
+            "aspect_refs": ["accuracy"],
+            "statement": { "predicate": "score", "content": 1 }
+        })
+    }
+
+    #[test]
+    fn claim_parse_error_version_invalid_non_string() {
+        // VersionInvalid: version field is present but not a string
+        let apl = serde_json::json!({
+            "version": 42,
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplVersionUnsupported));
+    }
+
+    #[test]
+    fn claim_parse_error_version_unsupported() {
+        // VersionUnsupported: version is a string but not "0.1"
+        let apl = serde_json::json!({
+            "version": "9.9",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplVersionUnsupported));
+    }
+
+    #[test]
+    fn claim_parse_error_claim_missing() {
+        // ClaimMissing: no "claim" key
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplClaimMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_claim_not_object() {
+        // ClaimNotObject: "claim" is a scalar, not an object
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": "not-an-object",
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplClaimMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_claim_kind_missing() {
+        // ClaimKindMissing: "kind" key absent
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplClaimKindMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_claim_kind_unsupported() {
+        // ClaimKindUnsupported: kind is not "observation"
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "attestation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplClaimKindUnsupported));
+    }
+
+    #[test]
+    fn claim_parse_error_subject_missing() {
+        // SubjectMissing: "subject" key absent
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_subject_invalid_not_object() {
+        // SubjectInvalid: "subject" is a scalar, not an object
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": "not-an-object",
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_subject_missing_id_and_digest() {
+        // SubjectMissingIdAndDigest: subject object has neither id nor digest
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": {},
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_subject_id_invalid() {
+        // SubjectIdInvalid: id is present but not a non-empty string
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectIdInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_subject_digest_invalid() {
+        // SubjectDigestInvalid: digest present but fails hash-string parsing
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "digest": "not-a-valid-hash" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplSubjectDigestInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_aspect_refs_missing() {
+        // AspectRefsMissing: "aspect_refs" key absent
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplAspectRefsMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_aspect_refs_invalid_empty_array() {
+        // AspectRefsInvalid: aspect_refs is an empty array
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": [],
+                "statement": { "predicate": "score", "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplAspectRefsInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_statement_missing() {
+        // StatementMissing: "statement" key absent
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"]
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplStatementMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_statement_invalid_not_object() {
+        // StatementInvalid: statement is not a JSON object
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": "not-an-object"
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplStatementInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_predicate_missing() {
+        // PredicateMissing: statement object has no "predicate" key
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "content": 1 }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplPredicateMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_content_missing() {
+        // ContentMissing: statement has predicate but no "content" key
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score" }
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::ClaimStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplContentMissing));
+    }
+
+    #[test]
+    fn claim_parse_error_frame_ref_invalid() {
+        // FrameRefInvalid: frame_ref present but not a valid Reference object
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": "not-a-ref-object"
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(out.failure_classes, vec![FailureClass::ReferenceFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameRefInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_related_frames_invalid() {
+        // RelatedFramesInvalid: related_frames present but contains invalid entries
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 1 },
+                "related_frames": ["not-a-valid-hash"]
+            },
+            "frame_ref": { "hash": h(0x01) }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::RelationStructureFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplRelatedFramesInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_bridge_refs_invalid() {
+        // BridgeRefsInvalid: bridge_refs present but not valid Reference objects
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": h(0x01) },
+            "bridge_refs": ["not-a-ref"]
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::RelationStructureFailure]
+        );
+        assert!(out.diagnostics.contains(&Diagnostic::AplBridgeRefsInvalid));
+    }
+
+    #[test]
+    fn claim_parse_error_transformation_refs_invalid() {
+        // TransformationRefsInvalid: transformation_refs present but not valid Reference objects
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": h(0x01) },
+            "transformation_refs": ["not-a-ref"]
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &InMemoryFrameResolver::new(),
+            &InMemoryBridgeResolver::new(),
+            None,
+        );
+        assert_eq!(
+            out.failure_classes,
+            vec![FailureClass::RelationStructureFailure]
+        );
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplTransformationRefsInvalid));
+    }
+
+    // ---- FrameParseError coverage: every map_frame_parse_error arm ----
+
+    // Helper: insert a frame JSON using its canonical hash so step 6 (hash-match)
+    // passes, then hand back the hash string for use in the claim's frame_ref.
+    fn insert_frame_get_hash(frames: &mut InMemoryFrameResolver, v: serde_json::Value) -> String {
+        frames.insert(v).to_string()
+    }
+
+    #[test]
+    fn frame_parse_error_frame_not_object() {
+        // FrameNotObject: resolved frame value is a scalar (not an object)
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(&mut frames, serde_json::json!(42));
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_version_missing() {
+        // FrameVersionMissing: frame object has no "version" key
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "observer": "o",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameVersionMissing));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_version_unsupported() {
+        // FrameVersionUnsupported: version is a string but not "0.1"
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "2.0",
+                "observer": "o",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameVersionUnsupported));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_observer_invalid() {
+        // FrameObserverInvalid: observer is absent
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameObserverInvalid));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_aspect_invalid() {
+        // FrameAspectInvalid: aspect is an empty array
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "observer": "o",
+                "procedure": "p",
+                "aspect": [],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameAspectInvalid));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_invariance_invalid() {
+        // FrameInvarianceInvalid: invariance is an empty array
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "observer": "o",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": [],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameInvarianceInvalid));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_exclusions_invalid() {
+        // FrameExclusionsInvalid: exclusions is an empty array
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "observer": "o",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": []
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameExclusionsInvalid));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_scope_or_resolution_missing() {
+        // FrameScopeOrResolutionMissing: neither scope nor resolution present
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "observer": "o",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "invariance": ["i"],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameScopeOrResolutionMissing));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_kernel_value_invalid() {
+        // FrameKernelValueInvalid: procedure is present but has an invalid value type
+        // (empty object triggers FrameKernelValueInvalid via parse_optional_string_or_object)
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "observer": "o",
+                "procedure": {},
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": ["e"]
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+    }
+
+    #[test]
+    fn frame_parse_error_frame_extends_invalid() {
+        // FrameExtendsInvalid: extends present but not a valid Reference Object
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = insert_frame_get_hash(
+            &mut frames,
+            serde_json::json!({
+                "version": "0.1",
+                "observer": "o",
+                "procedure": "p",
+                "aspect": ["accuracy"],
+                "scope": "s",
+                "invariance": ["i"],
+                "exclusions": ["e"],
+                "extends": "not-a-ref"
+            }),
+        );
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": minimal_claim_body(),
+            "frame_ref": { "hash": frame_hash }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+    }
+
+    // ---- cross_check path: profile check_frame failure ----
+
+    #[test]
+    fn profile_check_frame_failure_short_circuits_cross_check() {
+        struct FrameRejectProfile;
+
+        impl Profile for FrameRejectProfile {
+            fn id(&self) -> &'static str {
+                "frame-reject"
+            }
+
+            fn check_frame(&self, _: &Frame) -> ProfileCheckResult {
+                Err(ProfileFailure {
+                    failure_class: FailureClass::FrameFailure,
+                    diagnostics: vec![Diagnostic::AplFrameObserverInvalid],
+                })
+            }
+        }
+
+        let mut frames = InMemoryFrameResolver::new();
+        let frame_hash = frames.insert(valid_frame_value());
+        let apl = serde_json::json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "x" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.1 }
+            },
+            "frame_ref": { "hash": frame_hash.to_string() }
+        });
+        let carrier = stub_valid(serde_json::json!({ "apl": apl }));
+        let p = FrameRejectProfile;
+        let out = verify_receipt(
+            &[],
+            &carrier,
+            &frames,
+            &InMemoryBridgeResolver::new(),
+            Some(&p),
+        );
+
+        assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
+        assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out
+            .diagnostics
+            .contains(&Diagnostic::AplFrameObserverInvalid));
+        assert!(out.diagnostics.contains(&Diagnostic::CarrierValid));
+        assert!(out.diagnostics.contains(&Diagnostic::AplPresent));
+        assert!(out.diagnostics.contains(&Diagnostic::AplFrameBound));
+    }
+}
