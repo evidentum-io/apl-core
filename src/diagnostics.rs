@@ -139,9 +139,12 @@ impl Serialize for DiagnosticCode {
 fn intern_diagnostic(s: &str) -> &'static str {
     static INTERN: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
     let intern = INTERN.get_or_init(|| Mutex::new(HashMap::new()));
-    // A poisoned mutex here would mean a previous thread panicked while holding
-    // the lock. Propagating the poison is the correct behavior — the intern
-    // table may be in an inconsistent state.
+    // If a previous thread panicked while holding the lock, the mutex is
+    // poisoned. We intentionally recover the guard via `PoisonError::into_inner`
+    // and continue: the intern table is monotonic (only inserts, never
+    // removes or mutates entries), so even mid-panic its contents remain a
+    // consistent map of code strings to leaked `&'static str`. A panic cannot
+    // leave the table in a broken state worth propagating a poison for.
     let mut map = intern
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
