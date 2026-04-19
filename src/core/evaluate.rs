@@ -27,6 +27,7 @@ use crate::core::bridge::Bridge;
 use crate::core::carrier::CarrierVerifier;
 use crate::core::claim::{Claim, Statement};
 use crate::core::frame::Frame;
+use crate::core::jcs::canonical_hash;
 use crate::core::output::{CoreOutcome, PairwiseOutput, RelationOutcome, SideCore, VerifierOutput};
 use crate::core::relation::RelationQuery;
 use crate::core::resolver::{BridgeResolution, BridgeResolver, FrameResolver};
@@ -430,18 +431,45 @@ pub fn evaluate_relation(
     diagnostics.push(D::APL_CROSS_FRAME);
 
     // STEP 15: collect bridge candidates.
+    //
+    // Every candidate must have a canonical hash equal to the hash that was
+    // requested. This enforces the content-addressed trust boundary: a resolver
+    // (or caller-supplied value) that returns a *different* bridge object for a
+    // given hash request is rejected, regardless of whether its frame/scope
+    // fields happen to match. Without this check a malicious or buggy resolver
+    // could substitute an attacker-chosen bridge and bypass unforgeable identity.
     let mut candidate_values: Vec<Value> = Vec::new();
-    for r in left
+
+    // Collect all requested bridge hashes so we can match supplied bridges.
+    let requested_refs: Vec<&crate::core::hash::Reference> = left
         .bridge_refs
         .iter()
         .flatten()
         .chain(right.bridge_refs.iter().flatten())
-    {
+        .collect();
+
+    for r in &requested_refs {
         if let BridgeResolution::Found(v) = bridges.resolve(&r.hash) {
-            candidate_values.push(v);
+            let observed = canonical_hash(&v);
+            if observed == r.hash {
+                candidate_values.push(v);
+            } else {
+                diagnostics.push(D::APL_BRIDGE_HASH_MISMATCH);
+            }
         }
     }
-    candidate_values.extend(input.supplied_bridges.iter().cloned());
+
+    // Supplied bridges: only accept a value if its canonical hash matches one
+    // of the requested bridge_refs. Unsolicited values (no matching ref) are
+    // silently ignored; mismatched-hash values emit a diagnostic.
+    for v in &input.supplied_bridges {
+        let observed = canonical_hash(v);
+        if requested_refs.iter().any(|r| r.hash == observed) {
+            candidate_values.push(v.clone());
+        }
+        // Unsolicited supplied values (hash not in any bridge_ref) are ignored
+        // without a diagnostic — callers may supply a superset.
+    }
 
     if candidate_values.is_empty() {
         diagnostics.push(D::APL_BRIDGE_NOT_FOUND);
@@ -742,6 +770,30 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         Claim::parse(&v).expect("valid claim fixture")
+    }
+
+    /// Like `make_claim` but also embeds a single `bridge_refs` entry so that
+    /// `supplied_bridges` values whose canonical hash equals `bridge_hash` are
+    /// accepted by the content-addressed hash check in STEP 15.
+    fn make_claim_with_bridge_ref(
+        frame_hash: &str,
+        aspects: &[&str],
+        predicate: &str,
+        content: Value,
+        bridge_hash: &str,
+    ) -> Claim {
+        let v = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": aspects,
+                "statement": { "predicate": predicate, "content": content }
+            },
+            "frame_ref": { "hash": frame_hash },
+            "bridge_refs": [{ "hash": bridge_hash }]
+        });
+        Claim::parse(&v).expect("valid claim fixture with bridge_ref")
     }
 
     /// Parse a `Frame` from the canonical frame fixture `a` (`frame_value_a()`).
@@ -1109,6 +1161,8 @@ mod tests {
 
     #[test]
     fn ac10_bridge_frame_mismatch() {
+        use crate::core::jcs::canonical_hash;
+
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
         let frame_a = fixture_frame_a();
@@ -1130,11 +1184,18 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bad_bridge_hash = canonical_hash(&bad_bridge).to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a, &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a,
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bad_bridge_hash,
+                ),
                 frame_a,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -1154,6 +1215,8 @@ mod tests {
 
     #[test]
     fn ac11_bridge_scope_mismatch() {
+        use crate::core::jcs::canonical_hash;
+
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
         let frame_a = fixture_frame_a();
@@ -1174,11 +1237,18 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&bad_scope_bridge).to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a, &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a,
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 frame_a,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -1198,6 +1268,8 @@ mod tests {
 
     #[test]
     fn ac12_bridged_comparable() {
+        use crate::core::jcs::canonical_hash;
+
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
         let frame_a = fixture_frame_a();
@@ -1217,11 +1289,18 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&good_bridge).to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a, &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a,
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 frame_a,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -1241,6 +1320,8 @@ mod tests {
 
     #[test]
     fn ac13_invalid_bridge_ignored() {
+        use crate::core::jcs::canonical_hash;
+
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
         let frame_a = fixture_frame_a();
@@ -1260,11 +1341,18 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&invalid_bridge).to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a, &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a,
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 frame_a,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -1284,6 +1372,8 @@ mod tests {
 
     #[test]
     fn ac15_bridge_direction_enforced() {
+        use crate::core::jcs::canonical_hash;
+
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
         let frame_a = fixture_frame_a();
@@ -1304,11 +1394,18 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&reversed_bridge).to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a, &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a,
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 frame_a,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -1328,6 +1425,8 @@ mod tests {
 
     #[test]
     fn ac16_supplied_bridge_participates() {
+        use crate::core::jcs::canonical_hash;
+
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
         let frame_a = fixture_frame_a();
@@ -1335,7 +1434,8 @@ mod tests {
         let fh_a = frame_a.canonical_hash().to_string();
         let fh_b = frame_b.canonical_hash().to_string();
 
-        // No bridge_refs on claims; bridge is supplied out-of-band.
+        // Bridge is supplied out-of-band; the claim must reference it via
+        // bridge_refs for the content-addressed hash check to accept it.
         let good_bridge = json!({
             "version": "0.1",
             "source_frame": { "hash": fh_a },
@@ -1348,11 +1448,18 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&good_bridge).to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a, &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a,
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 frame_a,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -2039,12 +2146,297 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::BridgedComparable);
     }
 
+    // ---- Bridge canonical-hash verification (trust boundary) ----------------
+
+    #[test]
+    fn resolver_returned_bridge_with_wrong_canonical_hash_rejected() {
+        // A FakeBridgeResolver returns a structurally-valid bridge value but
+        // stores it under a *different* hash key, so canonical_hash(value) !=
+        // requested hash. evaluate_relation must emit APL_BRIDGE_HASH_MISMATCH
+        // and NOT accept the fake as a candidate — pair ends up Incomparable.
+        use crate::core::jcs::canonical_hash;
+        use crate::core::resolver::InMemoryBridgeResolver;
+
+        let mut frames = InMemoryFrameResolver::new();
+        let fv_a = frame_value_a();
+        let fv_b = frame_value_b();
+        let fh_a = frames.insert(fv_a);
+        let fh_b = frames.insert(fv_b);
+
+        // A legitimate-looking bridge value.
+        let real_bridge = json!({
+            "version": "0.1",
+            "source_frame": { "hash": fh_a.to_string() },
+            "target_frame": { "hash": fh_b.to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let real_hash = canonical_hash(&real_bridge);
+
+        // A different bridge value — different content, different canonical hash.
+        let fake_bridge = json!({
+            "version": "0.1",
+            "source_frame": { "hash": fh_a.to_string() },
+            "target_frame": { "hash": fh_b.to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": ["injected"],
+            "losses": []
+        });
+        // Store the fake value under the real hash key — simulates a malicious
+        // resolver that substitutes a different bridge for the requested one.
+        let mut bridges = InMemoryBridgeResolver::new();
+        bridges.insert_raw(real_hash, fake_bridge);
+
+        // Claims reference the real bridge hash.
+        let left_apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.78 }
+            },
+            "frame_ref": { "hash": fh_a.to_string() },
+            "bridge_refs": [{ "hash": real_hash.to_string() }]
+        });
+        let right_apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.79 }
+            },
+            "frame_ref": { "hash": fh_b.to_string() }
+        });
+
+        let left_claim = Claim::parse(&left_apl).expect("valid left claim");
+        let right_claim = Claim::parse(&right_apl).expect("valid right claim");
+        let left_frame = Frame::parse(&frame_value_a()).expect("valid left frame");
+        let right_frame = Frame::parse(&frame_value_b()).expect("valid right frame");
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
+                core_valid_output(),
+                left_claim,
+                left_frame,
+            )),
+            right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
+                core_valid_output(),
+                right_claim,
+                right_frame,
+            )),
+            query: base_query(),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
+
+        assert!(
+            out.diagnostics
+                .contains(&crate::diagnostics::APL_BRIDGE_HASH_MISMATCH),
+            "must emit APL_BRIDGE_HASH_MISMATCH for wrong-hash resolver response"
+        );
+        assert_eq!(
+            out.relation_outcome,
+            RelationOutcome::Incomparable,
+            "fake bridge must not be accepted — pair must be Incomparable"
+        );
+    }
+
+    #[test]
+    fn resolver_returned_bridge_with_correct_hash_accepted() {
+        // Regression: a resolver that returns the correct bridge (canonical_hash
+        // matches requested hash) must still lead to BridgedComparable.
+        // This test mirrors bridge_from_resolver_found_leads_to_bridged_comparable
+        // and asserts no hash-mismatch diagnostic is emitted.
+        use crate::core::jcs::canonical_hash;
+        use crate::core::resolver::InMemoryBridgeResolver;
+
+        let mut frames = InMemoryFrameResolver::new();
+        let fv_a = frame_value_a();
+        let fv_b = frame_value_b();
+        let fh_a = frames.insert(fv_a);
+        let fh_b = frames.insert(fv_b);
+
+        let bridge_value = json!({
+            "version": "0.1",
+            "source_frame": { "hash": fh_a.to_string() },
+            "target_frame": { "hash": fh_b.to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge_hash = canonical_hash(&bridge_value);
+
+        let mut bridges = InMemoryBridgeResolver::new();
+        bridges.insert(bridge_value);
+
+        let left_apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.78 }
+            },
+            "frame_ref": { "hash": fh_a.to_string() },
+            "bridge_refs": [{ "hash": bridge_hash.to_string() }]
+        });
+        let right_apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.79 }
+            },
+            "frame_ref": { "hash": fh_b.to_string() }
+        });
+
+        let left_claim = Claim::parse(&left_apl).expect("valid left claim");
+        let right_claim = Claim::parse(&right_apl).expect("valid right claim");
+        let left_frame = Frame::parse(&frame_value_a()).expect("valid left frame");
+        let right_frame = Frame::parse(&frame_value_b()).expect("valid right frame");
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
+                core_valid_output(),
+                left_claim,
+                left_frame,
+            )),
+            right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
+                core_valid_output(),
+                right_claim,
+                right_frame,
+            )),
+            query: base_query(),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
+
+        assert!(
+            !out.diagnostics
+                .contains(&crate::diagnostics::APL_BRIDGE_HASH_MISMATCH),
+            "correct-hash resolver response must not emit APL_BRIDGE_HASH_MISMATCH"
+        );
+        assert_eq!(
+            out.relation_outcome,
+            RelationOutcome::BridgedComparable,
+            "correct bridge must be accepted — pair must be BridgedComparable"
+        );
+    }
+
+    #[test]
+    fn supplied_bridge_hash_mismatches_requested_ref_rejected() {
+        // A supplied_bridges value whose canonical_hash does not match any
+        // bridge_ref in the claims is silently ignored (unsolicited). The pair
+        // ends up Incomparable if no resolver bridge is found either.
+        use crate::core::jcs::canonical_hash;
+        use crate::core::resolver::InMemoryBridgeResolver;
+
+        let mut frames = InMemoryFrameResolver::new();
+        let fv_a = frame_value_a();
+        let fv_b = frame_value_b();
+        let fh_a = frames.insert(fv_a);
+        let fh_b = frames.insert(fv_b);
+
+        // A "phantom" bridge that isn't referenced by any bridge_ref in the claims.
+        let phantom_bridge = json!({
+            "version": "0.1",
+            "source_frame": { "hash": fh_a.to_string() },
+            "target_frame": { "hash": fh_b.to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let phantom_hash = canonical_hash(&phantom_bridge);
+
+        // Claims reference a *different* hash — not the phantom bridge.
+        let unrelated_hash = crate::core::hash::Hash::from_bytes([0u8; 32]);
+        let bridges = InMemoryBridgeResolver::new(); // resolver has nothing
+
+        let left_apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.78 }
+            },
+            "frame_ref": { "hash": fh_a.to_string() },
+            "bridge_refs": [{ "hash": unrelated_hash.to_string() }]
+        });
+        let right_apl = json!({
+            "version": "0.1",
+            "claim": {
+                "kind": "observation",
+                "subject": { "id": "m" },
+                "aspect_refs": ["accuracy"],
+                "statement": { "predicate": "score", "content": 0.79 }
+            },
+            "frame_ref": { "hash": fh_b.to_string() }
+        });
+
+        let left_claim = Claim::parse(&left_apl).expect("valid left claim");
+        let right_claim = Claim::parse(&right_apl).expect("valid right claim");
+        let left_frame = Frame::parse(&frame_value_a()).expect("valid left frame");
+        let right_frame = Frame::parse(&frame_value_b()).expect("valid right frame");
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
+                core_valid_output(),
+                left_claim,
+                left_frame,
+            )),
+            right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
+                core_valid_output(),
+                right_claim,
+                right_frame,
+            )),
+            query: base_query(),
+            // Supply a bridge whose hash does not match any bridge_ref.
+            supplied_bridges: vec![phantom_bridge],
+        };
+        let _ = phantom_hash; // hash computed above, used only to document intent
+        let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
+
+        assert_eq!(
+            out.relation_outcome,
+            RelationOutcome::Incomparable,
+            "unsolicited supplied bridge must be ignored — pair must be Incomparable"
+        );
+        assert!(
+            !out.diagnostics
+                .contains(&crate::diagnostics::APL_BRIDGE_HASH_MISMATCH),
+            "unsolicited supplied bridge must be silently ignored, not emit hash-mismatch"
+        );
+    }
+
     // ---- check_bridge_applicability Ok and Err paths (lines 455-459) --------
 
     #[test]
     fn profile_check_bridge_applicability_ok_leads_to_bridged_comparable() {
         // Profile accepts the bridge candidate; Ok(()) branch (line 456) is taken
         // and evaluation yields BridgedComparable.
+        use crate::core::jcs::canonical_hash;
+
         struct AcceptAllBridges;
         impl crate::profile::trait_def::Profile for AcceptAllBridges {
             fn id(&self) -> &'static str {
@@ -2070,6 +2462,7 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&bridge_value).to_string();
 
         let left_frame = Frame::parse(&frame_value_a()).expect("valid left frame");
         let right_frame = Frame::parse(&frame_value_b()).expect("valid right frame");
@@ -2079,7 +2472,13 @@ mod tests {
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a.to_string(), &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a.to_string(),
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 left_frame,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
@@ -2104,6 +2503,8 @@ mod tests {
     fn profile_check_bridge_applicability_err_skips_candidate() {
         // Profile rejects every bridge candidate via check_bridge_applicability.
         // Lines 457-459 (extend diagnostics + continue) must be exercised.
+        use crate::core::jcs::canonical_hash;
+
         struct RejectAllBridges;
         impl crate::profile::trait_def::Profile for RejectAllBridges {
             fn id(&self) -> &'static str {
@@ -2139,6 +2540,7 @@ mod tests {
             "assumptions": [],
             "losses": []
         });
+        let bridge_hash = canonical_hash(&bridge_value).to_string();
 
         let left_frame = Frame::parse(&frame_value_a()).expect("valid left frame");
         let right_frame = Frame::parse(&frame_value_b()).expect("valid right frame");
@@ -2146,7 +2548,13 @@ mod tests {
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated(VerifiedReceipt::new(
                 core_valid_output(),
-                make_claim(&fh_a.to_string(), &["accuracy"], "score", json!(0.78)),
+                make_claim_with_bridge_ref(
+                    &fh_a.to_string(),
+                    &["accuracy"],
+                    "score",
+                    json!(0.78),
+                    &bridge_hash,
+                ),
                 left_frame,
             )),
             right: ReceiptInput::Prevalidated(VerifiedReceipt::new(
