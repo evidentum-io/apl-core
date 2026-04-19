@@ -686,6 +686,494 @@ mod bridge_tests {
     // AC16 & AC17 (adversarial): bridge from apl-ai-eval-profile.md §11
     // ---------------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------------
+    // Step 1: source frame hash mismatch → APL_BRIDGE_FRAME_MISMATCH
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step1_source_frame_hash_mismatch() {
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let tgt_f = Frame::parse(&frame_mmlu_runner_b()).expect("valid target frame");
+        // Build a bridge that references tgt_f hash as source_frame hash.
+        // The actual source_frame passed is src_f, so the check at step 1 fires.
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = query_accuracy();
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_BRIDGE_FRAME_MISMATCH),
+            "expected AplBridgeFrameMismatch for source hash mismatch, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 1: target frame hash mismatch → APL_BRIDGE_FRAME_MISMATCH
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step1_target_frame_hash_mismatch() {
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let tgt_f = Frame::parse(&frame_mmlu_runner_b()).expect("valid target frame");
+        // Build a bridge that references src_f hash as target_frame hash.
+        // The actual target_frame passed is tgt_f, so the check at step 1 fires.
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": src_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = query_accuracy();
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_BRIDGE_FRAME_MISMATCH),
+            "expected AplBridgeFrameMismatch for target hash mismatch, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 3: source frame fails AI-Eval conformance → APL_AI_EVAL_BRIDGE_SCOPE_MISMATCH
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step3_source_frame_not_ai_eval_conformant() {
+        // A Core-valid frame that has exclusions but lacks the specific AI-Eval
+        // required markers, causing check_ai_eval_frame_conformance to return Err.
+        let non_conformant_v = json!({
+            "version": "0.1",
+            "observer": { "id": "acme-eval-lab" },
+            "procedure": {
+                "runner_id": "lm-eval-harness@0.4.2",
+                "grader_id": "exact-match-v1"
+            },
+            "aspect": ["accuracy"],
+            "scope": {
+                "benchmark_id": "mmlu",
+                "benchmark_variant": "default",
+                "dataset_split": "dev"
+            },
+            "invariance": ["score-object-serialization"],
+            "exclusions": ["some-other-exclusion"]
+        });
+        let src_f = Frame::parse(&non_conformant_v).expect("core-valid frame");
+        let tgt_f = Frame::parse(&frame_mmlu_runner_b()).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = query_accuracy();
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_SCOPE_MISMATCH),
+            "expected AplAiEvalBridgeScopeMismatch for non-conformant source frame, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 3: target frame fails AI-Eval conformance → APL_AI_EVAL_BRIDGE_SCOPE_MISMATCH
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step3_target_frame_not_ai_eval_conformant() {
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        // Target frame has exclusions but lacks the specific AI-Eval required markers.
+        let non_conformant_v = json!({
+            "version": "0.1",
+            "observer": { "id": "acme-eval-lab" },
+            "procedure": {
+                "runner_id": "custom-runner@2.1",
+                "grader_id": "exact-match-v1"
+            },
+            "aspect": ["accuracy"],
+            "scope": {
+                "benchmark_id": "mmlu",
+                "benchmark_variant": "default",
+                "dataset_split": "dev"
+            },
+            "invariance": ["score-object-serialization"],
+            "exclusions": ["some-other-exclusion"]
+        });
+        let tgt_f = Frame::parse(&non_conformant_v).expect("core-valid frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = query_accuracy();
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_SCOPE_MISMATCH),
+            "expected AplAiEvalBridgeScopeMismatch for non-conformant target frame, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 8a: bridge source_aspects[0] != source_frame.aspect[0]
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step8a_bridge_source_aspect_differs_from_frame_aspect() {
+        // source_frame.aspect[0] = "accuracy", bridge.source_aspects[0] = "pass-rate"
+        // query.left_aspects = ["pass-rate"] to pass step 6.
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let tgt_f = Frame::parse(&frame_mmlu_runner_b()).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["pass-rate"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = RelationQuery::parse(&json!({
+            "left_aspects": ["pass-rate"],
+            "right_aspects": ["accuracy"],
+            "predicate": "score",
+            "relation_type": "score-delta"
+        }))
+        .expect("valid query");
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH),
+            "expected AplAiEvalBridgeSourceAspectMismatch at step 8a, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 8b: bridge target_aspects[0] != target_frame.aspect[0]
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step8b_bridge_target_aspect_differs_from_frame_aspect() {
+        // Both frames have aspect=["accuracy"]. Bridge target_aspects=["pass-rate"].
+        // query.right_aspects = ["pass-rate"] to pass step 7.
+        // Step 8a passes (bridge.source_aspects[0]="accuracy" == source_frame.aspect[0]).
+        // Step 8b fires (bridge.target_aspects[0]="pass-rate" != target_frame.aspect[0]="accuracy").
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let tgt_f = Frame::parse(&frame_mmlu_runner_b()).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["pass-rate"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = RelationQuery::parse(&json!({
+            "left_aspects": ["accuracy"],
+            "right_aspects": ["pass-rate"],
+            "predicate": "score",
+            "relation_type": "score-delta"
+        }))
+        .expect("valid query");
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH),
+            "expected AplAiEvalBridgeTargetAspectMismatch at step 8b, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 10 (grader-equivalence): wrong relation_type → AplAiEvalBridgeRelationTypeInvalid
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step10_grader_equivalence_wrong_relation_type() {
+        // Both frames share the same runner_id, so step 10a (runner match) passes.
+        // The bridge has relation_type = "repeatability-check" which is wrong for grader-equivalence.
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        // Build target with same runner_id but different grader_id.
+        let mut tgt_v = frame_mmlu_runner_a();
+        tgt_v["procedure"]["grader_id"] = json!("judge-v2");
+        let tgt_f = Frame::parse(&tgt_v).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "grader-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "repeatability-check"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = RelationQuery::parse(&json!({
+            "left_aspects": ["accuracy"],
+            "right_aspects": ["accuracy"],
+            "predicate": "score",
+            "relation_type": "repeatability-check"
+        }))
+        .expect("valid query");
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_RELATION_TYPE_INVALID),
+            "expected AplAiEvalBridgeRelationTypeInvalid for grader-equivalence, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 10 (grader-equivalence): procedure differs beyond grader_id
+    //                               → AplAiEvalBridgeProcedureMismatch
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step10_grader_equivalence_procedure_differs_beyond_grader_id() {
+        // Same runner_id, same grader_id, but prompt_protocol differs.
+        // step 10a (runner match) passes, step 10b (canonical equality after strip grader_id) fails.
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let mut tgt_v = frame_mmlu_runner_a();
+        tgt_v["procedure"]["grader_id"] = json!("judge-v2");
+        tgt_v["procedure"]["prompt_protocol"] = json!("few-shot-v3");
+        let tgt_f = Frame::parse(&tgt_v).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "grader-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = query_accuracy();
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_PROCEDURE_MISMATCH),
+            "expected AplAiEvalBridgeProcedureMismatch for grader-equivalence, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step 11 (repeatability): procedures differ → AplAiEvalBridgeProcedureMismatch
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn step11_repeatability_procedure_mismatch() {
+        // Repeatability bridge requires identical procedures. Use frames with same
+        // aspect and scope but different prompt_protocol.
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let mut tgt_v = frame_mmlu_runner_a();
+        tgt_v["procedure"]["prompt_protocol"] = json!("few-shot-v2");
+        let tgt_f = Frame::parse(&tgt_v).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "repeatability",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "repeatability-check"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = RelationQuery::parse(&json!({
+            "left_aspects": ["accuracy"],
+            "right_aspects": ["accuracy"],
+            "predicate": "score",
+            "relation_type": "repeatability-check"
+        }))
+        .expect("valid query");
+
+        let err = check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).unwrap_err();
+        assert!(
+            err.contains(&APL_AI_EVAL_BRIDGE_PROCEDURE_MISMATCH),
+            "expected AplAiEvalBridgeProcedureMismatch for repeatability, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helper coverage: frame_scope_as_value and frame_procedure_as_value String arms
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn frame_scope_as_value_string_arm() {
+        // Build a frame with scope as a plain string to exercise the
+        // StringOrObject::String arm in frame_scope_as_value.
+        let v = serde_json::json!({
+            "version": "0.1",
+            "observer": "acme",
+            "procedure": "benchmark-run",
+            "aspect": ["accuracy"],
+            "scope": "mmlu/dev",
+            "invariance": ["i"],
+            "exclusions": ["e"]
+        });
+        let f = Frame::parse(&v).expect("core-valid frame");
+        let result = frame_scope_as_value(&f);
+        assert!(
+            result.is_string(),
+            "expected Value::String for StringOrObject::String scope"
+        );
+    }
+
+    #[test]
+    fn frame_scope_as_value_none_arm() {
+        // Build a frame with resolution (no scope) to exercise the None arm.
+        // apl-core allows scope=None when resolution is present.
+        let v = serde_json::json!({
+            "version": "0.1",
+            "observer": "acme",
+            "procedure": "benchmark-run",
+            "aspect": ["accuracy"],
+            "resolution": { "resolver": "acme-resolver", "ref": "mmlu-dev" },
+            "invariance": ["i"],
+            "exclusions": ["e"]
+        });
+        let f = Frame::parse(&v).expect("core-valid frame");
+        let result = frame_scope_as_value(&f);
+        assert!(result.is_null(), "expected Value::Null for absent scope");
+    }
+
+    #[test]
+    fn frame_procedure_as_value_string_arm() {
+        // Build a frame with procedure as a plain string to exercise the
+        // StringOrObject::String arm in frame_procedure_as_value.
+        let v = serde_json::json!({
+            "version": "0.1",
+            "observer": "acme",
+            "procedure": "benchmark-run",
+            "aspect": ["accuracy"],
+            "scope": "mmlu/dev",
+            "invariance": ["i"],
+            "exclusions": ["e"]
+        });
+        let f = Frame::parse(&v).expect("core-valid frame");
+        let result = frame_procedure_as_value(&f);
+        assert!(
+            result.is_string(),
+            "expected Value::String for StringOrObject::String procedure"
+        );
+    }
+
+    #[test]
+    fn frame_procedure_as_value_none_arm() {
+        // Build a frame with instrument (no procedure) to exercise the None arm.
+        let v = serde_json::json!({
+            "version": "0.1",
+            "observer": "acme",
+            "instrument": { "name": "some-tool" },
+            "aspect": ["accuracy"],
+            "scope": "mmlu/dev",
+            "invariance": ["i"],
+            "exclusions": ["e"]
+        });
+        let f = Frame::parse(&v).expect("core-valid frame");
+        let result = frame_procedure_as_value(&f);
+        assert!(
+            result.is_null(),
+            "expected Value::Null for absent procedure"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Grader-equivalence: happy path → Ok(())
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn grader_equivalence_accepts_when_only_grader_differs() {
+        // Both frames share the same runner_id and prompt_protocol but differ in grader_id.
+        let src_f = Frame::parse(&frame_mmlu_runner_a()).expect("valid source frame");
+        let mut tgt_v = frame_mmlu_runner_a();
+        tgt_v["procedure"]["grader_id"] = json!("judge-v2");
+        let tgt_f = Frame::parse(&tgt_v).expect("valid target frame");
+
+        let bridge_v = json!({
+            "version": "0.1",
+            "bridge_kind": "grader-equivalence",
+            "source_frame": { "hash": src_f.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt_f.canonical_hash().to_string() },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge = Bridge::parse(&bridge_v).expect("valid bridge");
+        let q = query_accuracy();
+
+        assert!(
+            check_ai_eval_bridge_applicability(&bridge, &src_f, &tgt_f, &q).is_ok(),
+            "grader-equivalence with only grader_id differing must return Ok(())"
+        );
+    }
+
     #[test]
     fn ac16_adversarial_bridge_aspect_family_mismatch() {
         // Bridge claims runner-equivalence but source_aspects = ["accuracy"]
