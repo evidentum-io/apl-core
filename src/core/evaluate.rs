@@ -80,9 +80,14 @@ pub struct PairwiseInput<'a> {
     /// Bridge artifacts supplied out-of-band (in addition to those
     /// discoverable via `bridge_refs` through the resolver).
     ///
-    /// Callers may supply structurally-invalid values here; STEP 17 of the
-    /// algorithm ignores them with `AplBridgeInvalid`, exactly as it does
-    /// for resolver-found candidates.
+    /// Each supplied value whose canonical hash matches one of the
+    /// `bridge_refs` entries from either claim is added to the candidate set
+    /// and then subject to normal structural / frame / scope / profile checks
+    /// in STEP 17 (structurally invalid candidates are ignored without a
+    /// diagnostic in that step). Supplied values whose canonical hash does
+    /// NOT match any `bridge_refs` entry are silently ignored without a
+    /// diagnostic — callers may supply a superset and the evaluator picks
+    /// only what was requested.
     pub supplied_bridges: Vec<Value>,
 }
 
@@ -459,16 +464,15 @@ pub fn evaluate_relation(
         }
     }
 
-    // Supplied bridges: only accept a value if its canonical hash matches one
-    // of the requested bridge_refs. Unsolicited values (no matching ref) are
-    // silently ignored; mismatched-hash values emit a diagnostic.
+    // Supplied bridges: accept a value only if its canonical hash matches one
+    // of the requested `bridge_refs`. Values whose hash does NOT match any
+    // requested ref are silently ignored (no diagnostic) — callers may supply
+    // a superset and the evaluator picks only what was requested.
     for v in &input.supplied_bridges {
         let observed = canonical_hash(v);
         if requested_refs.iter().any(|r| r.hash == observed) {
             candidate_values.push(v.clone());
         }
-        // Unsolicited supplied values (hash not in any bridge_ref) are ignored
-        // without a diagnostic — callers may supply a superset.
     }
 
     if candidate_values.is_empty() {
