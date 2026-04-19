@@ -1,12 +1,20 @@
 //! Profile trait — pluggable hook for vertical-profile checks.
 //!
-//! A [`Profile`] is an optional extension point invoked by
-//! [`crate::core::verify::verify_receipt`] after all core APL checks pass
-//! (steps 1–8 of the 14-step algorithm). It allows vertical profiles (e.g.
-//! AI-Eval, Photojournalism) to enforce profile-specific invariants without
-//! modifying the core algorithm.
+//! A [`Profile`] is the extension point through which vertical profiles (e.g.
+//! AI-Eval, Photojournalism) plug into APL verification. Profiles MAY tighten
+//! core requirements but MUST NOT weaken them. The architecture guarantees this
+//! structurally: profile hooks are called only AFTER the relevant Core checks
+//! have already passed.
 //!
-//! # Hook Invocation Order (single-receipt)
+//! # Contract
+//!
+//! Per `apl-spec.md §9.10` and `§17`: "Profiles MAY tighten relation-layer
+//! requirements and MAY introduce additional `claim.kind`, required bridge
+//! semantics, or required transformation declarations." Per
+//! `apl-relation-spec.md §6.4`: "Profiles MUST NOT weaken core requirements on
+//! directionality, frame match or scope match."
+//!
+//! # Hook Invocation Order (single-receipt, CORE-VERIFY-1)
 //!
 //! 1. [`Profile::check_claim`] — claim-only invariants (e.g. allowed predicates).
 //! 2. [`Profile::check_frame`] — frame-only invariants.
@@ -19,9 +27,9 @@
 //!
 //! 4. [`Profile::check_pairwise_relation`] — invoked AFTER Core preconditions
 //!    and statement structural compatibility pass, BEFORE the frame-equality
-//!    branch is selected. Applies to both same-frame and cross-frame paths.
+//!    branch is selected. Applies to BOTH same-frame and cross-frame paths.
 //! 5. [`Profile::check_bridge_applicability`] — invoked PER bridge candidate on
-//!    the cross-frame path, AFTER Core frame-match and scope-match pass.
+//!    the cross-frame path ONLY, AFTER Core frame-match and scope-match pass.
 
 use crate::core::bridge::Bridge;
 use crate::core::claim::Claim;
@@ -44,126 +52,170 @@ pub struct ProfileFailure {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Result type for profile hook invocations.
+/// Result type for single-receipt profile hook invocations.
+///
+/// On rejection the profile returns a [`ProfileFailure`] that carries the
+/// failure class and the diagnostics to append to the verifier output.
 pub type ProfileCheckResult = Result<(), ProfileFailure>;
 
-/// Pluggable vertical-profile check hooks.
+/// Result type for bridge-applicability and pairwise-relation profile hooks.
 ///
-/// Implement this trait to enforce profile-specific invariants on top of the
-/// core APL verification algorithm. A profile may inspect `Claim`, `Frame`, or
-/// both (via `cross_check`), and return `Err(ProfileFailure)` to reject the
-/// receipt.
+/// On rejection the profile returns a list of diagnostics to append to
+/// `PairwiseOutput.diagnostics`. No failure class is needed because the
+/// relation-layer output does not have a `failure_classes` field.
+pub type BridgeCheckResult = Result<(), Vec<Diagnostic>>;
+
+/// Pluggable vertical-profile check hooks per `apl-spec.md §17` and `§9.10`.
+///
+/// Profiles MAY tighten core requirements but MUST NOT weaken them. A profile
+/// receives only the artifacts and the query — it cannot inspect whether Core
+/// already accepted or rejected a bridge, so it can only add its own verdict on
+/// top of the Core verdict.
 ///
 /// # Object Safety
 ///
-/// This trait is object-safe. Pass it as `Option<&dyn Profile>` to
-/// [`crate::core::verify::verify_receipt`].
+/// This trait is object-safe (`Box<dyn Profile>` and `&dyn Profile` both work)
+/// because all methods take `&self`, there are no associated types, no generic
+/// methods, and no `Self` return types.
 ///
 /// # Default Implementations
 ///
-/// All three hooks default to `Ok(())` so that a profile only needs to
-/// override the hooks it cares about.
-pub trait Profile: Send + Sync {
-    /// Unique identifier for this profile (for diagnostics and logging).
+/// All five hooks default to `Ok(())` so that a profile only needs to override
+/// the hooks relevant to its invariants.
+pub trait Profile: Send + Sync + 'static {
+    /// Human-readable profile identifier used only for diagnostic messages and
+    /// logging; not part of the APL protocol wire format.
     fn id(&self) -> &'static str;
 
-    /// Check claim-only invariants.
+    /// Single-receipt claim check.
     ///
-    /// Called after core claim-structure and frame-resolution checks pass.
-    /// The default implementation accepts all claims.
+    /// Called by CORE-VERIFY-1 after Core steps 1–8 complete (carrier, claim
+    /// parse, frame resolve, kernel, aspect linkage). Use this hook to enforce
+    /// claim-only profile invariants (e.g. allowed `claim.kind` or `predicate`
+    /// values per `apl-spec.md §17`).
+    ///
+    /// On `Err(profile_failure)`, CORE-VERIFY-1 sets `core_outcome =
+    /// AplInvalid`, `failure_classes = [failure.failure_class]`, and appends
+    /// `failure.diagnostics`. The remaining hooks (`check_frame`,
+    /// `cross_check`) are NOT invoked.
+    ///
+    /// Default: accepts all core-valid claims (no-op).
     ///
     /// # Errors
     ///
-    /// Returns `Err(ProfileFailure)` if the claim violates a profile constraint.
+    /// Returns `Err(ProfileFailure)` if the claim violates a profile invariant.
     fn check_claim(&self, _claim: &Claim) -> ProfileCheckResult {
         Ok(())
     }
 
-    /// Check frame-only invariants.
+    /// Single-receipt frame check.
     ///
-    /// Called after `check_claim` returns `Ok(())`.
-    /// The default implementation accepts all frames.
+    /// Called by CORE-VERIFY-1 after `check_claim` returns `Ok(())`. Same
+    /// rejection semantics as `check_claim`. Use this hook for frame-only
+    /// profile invariants (e.g. allowed `frame.scope` shapes).
+    ///
+    /// Default: accepts all core-valid frames (no-op).
     ///
     /// # Errors
     ///
-    /// Returns `Err(ProfileFailure)` if the frame violates a profile constraint.
+    /// Returns `Err(ProfileFailure)` if the frame violates a profile invariant.
     fn check_frame(&self, _frame: &Frame) -> ProfileCheckResult {
         Ok(())
     }
 
-    /// Check joint claim+frame invariants.
+    /// Single-receipt joint claim + frame check.
     ///
-    /// Called after both `check_claim` and `check_frame` return `Ok(())`.
-    /// This is the only point where invariants requiring BOTH claim and frame
-    /// can be enforced (e.g. `benchmark_id` equality between
-    /// `claim.statement.content.benchmark_id` and `frame.scope.benchmark_id`).
+    /// Called by CORE-VERIFY-1 after BOTH `check_claim` and `check_frame`
+    /// return `Ok(())`. This is the only hook that can enforce invariants
+    /// requiring both artifacts simultaneously — e.g. AI-Eval §5.4
+    /// (`frame.aspect[0] == claim.aspect_refs[0]`) and §6.2
+    /// (`claim.statement.content.benchmark_id ==
+    /// frame.scope.benchmark_id`).
     ///
-    /// The default implementation accepts all (claim, frame) pairs.
+    /// Same rejection semantics as `check_claim`. If `check_claim` or
+    /// `check_frame` already failed, this hook is NOT invoked.
+    ///
+    /// Default: accepts all core-valid (claim, frame) pairs (no-op).
     ///
     /// # Errors
     ///
-    /// Returns `Err(ProfileFailure)` if the pair violates a joint constraint.
+    /// Returns `Err(ProfileFailure)` if the pair violates a joint profile
+    /// invariant.
     fn cross_check(&self, _claim: &Claim, _frame: &Frame) -> ProfileCheckResult {
         Ok(())
     }
 
-    /// Check pairwise relation invariants (RELATION-1, step 10a).
+    /// Pairwise profile gate — applies to BOTH same-frame and cross-frame paths.
     ///
-    /// Invoked AFTER Core preconditions and statement structural compatibility
-    /// pass, BEFORE the frame-equality branch is selected. Applies to both
-    /// same-frame and cross-frame paths.
+    /// Called by RELATION-1 after structural preconditions (§7.3–§7.7) have
+    /// passed and BEFORE the frame-equality branch selects same-frame vs
+    /// cross-frame. Use this hook to enforce profile-level restrictions on the
+    /// query (e.g. allowed `predicate`, allowed `relation_type`) that must hold
+    /// regardless of whether the pair is same-frame-comparable or
+    /// bridged-comparable.
     ///
-    /// Profiles use this hook to enforce query-level restrictions (e.g. allowed
-    /// predicate or `relation_type` values) that must apply to ALL pairs,
-    /// including same-frame ones.
+    /// On `Err(diagnostics)`, RELATION-1 returns `Incomparable` with the
+    /// diagnostics appended, without entering the same-frame branch or
+    /// collecting bridge candidates.
     ///
     /// # Arguments
     ///
-    /// * `left_claim` — parsed claim for the left receipt.
-    /// * `right_claim` — parsed claim for the right receipt.
-    /// * `left_frame` — resolved frame for the left receipt.
-    /// * `right_frame` — resolved frame for the right receipt.
-    /// * `query` — the pairwise relation query.
+    /// * `_left` — parsed claim for the left receipt.
+    /// * `_right` — parsed claim for the right receipt.
+    /// * `_left_frame` — resolved frame for the left receipt.
+    /// * `_right_frame` — resolved frame for the right receipt.
+    /// * `_query` — the pairwise relation query.
+    ///
+    /// Default: accept (no tightening).
     ///
     /// # Errors
     ///
-    /// Returns `Err` with profile-specific diagnostics if the pair violates a
-    /// profile constraint. The diagnostics are appended to `PairwiseOutput`.
+    /// Returns `Err(Vec<Diagnostic>)` if the pair violates a profile constraint.
+    /// The diagnostics are appended to `PairwiseOutput.diagnostics`.
     fn check_pairwise_relation(
         &self,
-        _left_claim: &Claim,
-        _right_claim: &Claim,
+        _left: &Claim,
+        _right: &Claim,
         _left_frame: &Frame,
         _right_frame: &Frame,
         _query: &RelationQuery,
-    ) -> Result<(), Vec<Diagnostic>> {
+    ) -> BridgeCheckResult {
         Ok(())
     }
 
-    /// Check bridge-level applicability invariants (RELATION-1, step 16 profile hook).
+    /// Pairwise bridge applicability check (cross-frame path only).
     ///
-    /// Invoked PER bridge candidate on the cross-frame path, AFTER Core
-    /// frame-match and scope-match pass. Profiles use this hook to enforce
-    /// bridge-kind-specific constraints (e.g. AI-Eval `bridge_kind` field check).
+    /// Called by RELATION-1 for every candidate bridge that has ALREADY passed
+    /// Core frame-match and scope-match, AND after `check_pairwise_relation`
+    /// returned `Ok(())`. Use this hook for bridge-kind-specific tightening
+    /// (e.g. AI-Eval §7.7 procedure identity checks by `bridge_kind`).
+    ///
+    /// On `Err(diagnostics)`, the candidate is rejected and the loop continues
+    /// with the next candidate. The profile MUST NOT accept a bridge that would
+    /// violate directionality, frame match, or scope match — Core already
+    /// enforced those and the profile hook is additive only.
     ///
     /// # Arguments
     ///
-    /// * `bridge` — the candidate bridge that passed Core applicability.
-    /// * `left_frame` — resolved frame for the left receipt.
-    /// * `right_frame` — resolved frame for the right receipt.
-    /// * `query` — the pairwise relation query.
+    /// * `_bridge` — the candidate bridge that passed Core applicability.
+    /// * `_source_frame` — resolved frame for the left receipt.
+    /// * `_target_frame` — resolved frame for the right receipt.
+    /// * `_query` — the pairwise relation query.
+    ///
+    /// Default: accept (no tightening).
     ///
     /// # Errors
     ///
-    /// Returns `Err` with profile-specific diagnostics if the bridge is not
-    /// applicable under the profile constraints. The candidate is skipped.
+    /// Returns `Err(Vec<Diagnostic>)` if the bridge is not applicable under the
+    /// profile constraints. The diagnostics are appended to
+    /// `PairwiseOutput.diagnostics` and the candidate is skipped.
     fn check_bridge_applicability(
         &self,
         _bridge: &Bridge,
-        _left_frame: &Frame,
-        _right_frame: &Frame,
+        _source_frame: &Frame,
+        _target_frame: &Frame,
         _query: &RelationQuery,
-    ) -> Result<(), Vec<Diagnostic>> {
+    ) -> BridgeCheckResult {
         Ok(())
     }
 }
@@ -335,10 +387,26 @@ mod tests {
         assert_eq!(p.check_claim(&claim), Ok(()));
     }
 
+    // AC1: trait object safety via Box<dyn Profile>
+    #[test]
+    fn usable_as_box_dyn_profile() {
+        let p: Box<dyn Profile> = Box::new(AcceptAll);
+        assert_eq!(p.id(), "accept-all");
+    }
+
+    // AC12: Profile: Send + Sync + 'static so that Box<dyn Profile> can be
+    // shared across threads.
+    #[test]
+    fn send_sync_static_bound() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+        assert_send_sync_static::<AcceptAll>();
+        assert_send_sync_static::<Box<dyn Profile>>();
+    }
+
     #[test]
     fn default_check_pairwise_relation_returns_ok() {
         // AcceptAll does not override check_pairwise_relation; the default
-        // no-op body (lines 132-141) must return Ok(()).
+        // no-op must return Ok(()).
         let p = AcceptAll;
         let claim = make_claim();
         let frame = make_frame();
@@ -357,7 +425,7 @@ mod tests {
     #[test]
     fn default_check_bridge_applicability_returns_ok() {
         // AcceptAll does not override check_bridge_applicability; the default
-        // no-op body (lines 160-168) must return Ok(()).
+        // no-op must return Ok(()).
         let p = AcceptAll;
         let frame = make_frame();
         let query = crate::core::relation::RelationQuery::parse(&json!({
