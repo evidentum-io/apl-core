@@ -407,10 +407,12 @@ pub const APL_FRAME_INVARIANCE_INVALID: DiagnosticCode =
 /// `frame.exclusions` fails structural validation.
 pub const APL_FRAME_EXCLUSIONS_INVALID: DiagnosticCode =
     DiagnosticCode::new("apl-frame-exclusions-invalid");
-/// `frame.procedure` or `frame.instrument` is absent (both required).
+/// Both `frame.procedure` and `frame.instrument` are absent. Per
+/// `apl-spec.md §6.1`, at least ONE of the two MUST be present.
 pub const APL_FRAME_PROCEDURE_OR_INSTRUMENT_MISSING: DiagnosticCode =
     DiagnosticCode::new("apl-frame-procedure-or-instrument-missing");
-/// `frame.scope` or `frame.resolution` is absent (both required).
+/// Both `frame.scope` and `frame.resolution` are absent. Per
+/// `apl-spec.md §6.1`, at least ONE of the two MUST be present.
 pub const APL_FRAME_SCOPE_OR_RESOLUTION_MISSING: DiagnosticCode =
     DiagnosticCode::new("apl-frame-scope-or-resolution-missing");
 /// `frame.kernel` is absent.
