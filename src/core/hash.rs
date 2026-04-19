@@ -220,7 +220,7 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Parse `sha256:<lowercase-hex-64>` into a validated [`Hash`].
+/// Parse `sha256:<lowercase-hex-64>` into a validated [`struct@Hash`].
 ///
 /// Per `apl-spec.md §4.2` the prefix is case-sensitive and the hex body MUST
 /// be lowercase. Uppercase hex or any other algorithm prefix is rejected.

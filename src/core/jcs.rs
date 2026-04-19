@@ -141,7 +141,7 @@ pub fn canonical_equal_after_strip(a: &Value, b: &Value, fields: &[&str]) -> boo
     canonical_equal(&Value::Object(stripped_a), &Value::Object(stripped_b))
 }
 
-/// SHA-256 of the JCS-canonical bytes of `v`, as a validated [`Hash`].
+/// SHA-256 of the JCS-canonical bytes of `v`, as a validated [`struct@Hash`].
 ///
 /// This is the canonical-identity computation mandated by `apl-spec.md §4.3`:
 /// "canonical identity MUST be computed as SHA-256 of the JCS-canonicalized
