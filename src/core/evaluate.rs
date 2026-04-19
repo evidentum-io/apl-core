@@ -188,8 +188,8 @@ pub fn evaluate_relation(
         diagnostics.push(D::APL_PAIR_RIGHT_INVALID);
     }
 
-    // STEP 3: query structural validity — guaranteed by RelationQuery::parse at
-    // construction; re-checked defensively here.
+    // STEP 3: query structural validity is already guaranteed by
+    // `RelationQuery::parse` at construction time; no re-validation here.
     //
     // If either side is invalid, claim/frame may be None; return early.
     if left_invalid
