@@ -8,7 +8,6 @@ pub mod frame;
 pub mod hash;
 pub mod jcs;
 pub mod output;
-pub mod receipt;
 pub mod relation;
 pub mod resolver;
 pub mod transformation;
