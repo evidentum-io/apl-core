@@ -103,7 +103,14 @@ pub fn verify_receipt(
     // ========== STEP 5 — resolve frame (§11.5, §16.2) ==========
     let frame_value = match frames.resolve(&claim.frame_ref.hash) {
         FrameResolution::Found(v) => v,
-        FrameResolution::NotFound | FrameResolution::ResolverError(_) => {
+        FrameResolution::NotFound => {
+            return mk_invalid_with_prefix(
+                diagnostics,
+                FailureClass::FrameFailure,
+                vec![D::APL_FRAME_MISSING, D::FAILURE_FRAME],
+            );
+        }
+        FrameResolution::ResolverError(_reason) => {
             return mk_invalid_with_prefix(
                 diagnostics,
                 FailureClass::FrameFailure,
@@ -446,7 +453,18 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
     // STEP 5 — resolve frame
     let frame_value = match frames.resolve(&claim.frame_ref.hash) {
         FrameResolution::Found(v) => v,
-        FrameResolution::NotFound | FrameResolution::ResolverError(_) => {
+        FrameResolution::NotFound => {
+            return (
+                mk_invalid_with_prefix(
+                    diagnostics,
+                    FailureClass::FrameFailure,
+                    vec![D::APL_FRAME_MISSING, D::FAILURE_FRAME],
+                ),
+                Some(claim),
+                None,
+            );
+        }
+        FrameResolution::ResolverError(_reason) => {
             return (
                 mk_invalid_with_prefix(
                     diagnostics,
@@ -698,7 +716,8 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_MISSING));
+        assert!(!out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
     }
 
     // ---- AC5: hash mismatch ----
@@ -1267,6 +1286,7 @@ mod tests {
         );
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
+        assert!(!out.diagnostics.contains(&diag::APL_FRAME_MISSING));
     }
 
     // ---- verify_receipt with passing profile (covers closing `}` at line 175) --
@@ -2293,6 +2313,8 @@ mod tests {
         );
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_MISSING));
+        assert!(!out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
         assert!(claim.is_some());
         assert!(frame.is_none());
     }
@@ -2324,6 +2346,8 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
+        assert!(!out.diagnostics.contains(&diag::APL_FRAME_MISSING));
         assert!(claim.is_some());
         assert!(frame.is_none());
     }
