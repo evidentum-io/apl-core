@@ -13,6 +13,7 @@ pub mod resolver;
 pub mod transformation;
 pub mod verify;
 
+pub use bridge::{Bridge, BridgeParseError, ComparisonScope};
 pub use claim::{Claim, ClaimInner, ClaimKind, ClaimParseError, Statement, Subject};
 pub use frame::{Frame, FrameParseError, Observer, StringOrObject};
 pub use hash::{parse_hash_string, Hash, ParseError, Reference};
