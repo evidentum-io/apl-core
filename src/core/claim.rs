@@ -106,8 +106,17 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimParseError {
     // === ClaimStructureFailure (§10.2) ======================================
-    /// `metadata.apl` is absent or not a JSON object (`§9.2`, `§10.2`).
+    /// `metadata.apl` key is absent (`§9.2`, `§10.2`).
+    ///
+    /// Distinct from [`MetadataAplInvalid`]: this variant fires only when
+    /// the key is not present at all (or when the JSON value passed directly to
+    /// [`Claim::parse`] is `null`/non-object and has no associated key context).
+    ///
+    /// [`MetadataAplInvalid`]: ClaimParseError::MetadataAplInvalid
     MetadataAplMissing,
+
+    /// `metadata.apl` key is present but its value is not a JSON object (`§9.2`, `§10.2`).
+    MetadataAplInvalid,
 
     /// `metadata.apl.version` field is absent (`§5.3`).
     VersionMissing,
@@ -125,8 +134,8 @@ pub enum ClaimParseError {
     /// `claim` field is absent (`§10.2`).
     ClaimMissing,
 
-    /// `claim` field is present but not a JSON object.
-    ClaimNotObject,
+    /// `claim` field is present but not a JSON object (`§10.2`).
+    ClaimInvalid,
 
     /// `claim.kind` is absent or not a JSON string (`§10.2`).
     ClaimKindMissing,
@@ -237,11 +246,14 @@ impl Claim {
     /// ```
     pub fn parse(v: &Value) -> Result<Self, ClaimParseError> {
         use ClaimParseError::{
-            BridgeRefsInvalid, ClaimMissing, FrameRefInvalid, FrameRefMissing, MetadataAplMissing,
+            BridgeRefsInvalid, ClaimMissing, FrameRefInvalid, FrameRefMissing, MetadataAplInvalid,
             TransformationRefsInvalid, VersionInvalid, VersionMissing, VersionUnsupported,
         };
 
-        let obj = v.as_object().ok_or(MetadataAplMissing)?;
+        // `v` is the value of the `metadata.apl` key (already extracted by the
+        // caller). If it is not a JSON object the key was present but its shape is
+        // wrong — that is MetadataAplInvalid, not MetadataAplMissing.
+        let obj = v.as_object().ok_or(MetadataAplInvalid)?;
 
         // version (§5.3)
         let version_v = obj.get("version").ok_or(VersionMissing)?;
@@ -322,11 +334,11 @@ impl Claim {
 
 fn parse_claim_inner(v: &Value) -> Result<ClaimInner, ClaimParseError> {
     use ClaimParseError::{
-        AspectRefsMissing, ClaimKindMissing, ClaimKindUnsupported, ClaimNotObject,
-        StatementMissing, SubjectMissing,
+        AspectRefsMissing, ClaimInvalid, ClaimKindMissing, ClaimKindUnsupported, StatementMissing,
+        SubjectMissing,
     };
 
-    let obj = v.as_object().ok_or(ClaimNotObject)?;
+    let obj = v.as_object().ok_or(ClaimInvalid)?;
 
     // kind (§5.5)
     let kind_v = obj.get("kind").ok_or(ClaimKindMissing)?;
@@ -619,10 +631,30 @@ mod negative_tests {
     }
 
     #[test]
-    fn non_object_root() {
+    fn non_object_root_emits_invalid_shape() {
+        // The value is present (passed to Claim::parse) but not a JSON object.
         assert_eq!(
             Claim::parse(&json!("string")),
-            Err(ClaimParseError::MetadataAplMissing)
+            Err(ClaimParseError::MetadataAplInvalid)
+        );
+        assert_eq!(
+            Claim::parse(&json!(42)),
+            Err(ClaimParseError::MetadataAplInvalid)
+        );
+        assert_eq!(
+            Claim::parse(&json!([])),
+            Err(ClaimParseError::MetadataAplInvalid)
+        );
+    }
+
+    #[test]
+    fn metadata_apl_missing_is_distinct_from_invalid_shape() {
+        // MetadataAplMissing is reserved for the absent-key path handled in verify.rs.
+        // Claim::parse itself only emits MetadataAplInvalid when the value is non-object.
+        // This test confirms the two variants exist and differ.
+        assert_ne!(
+            ClaimParseError::MetadataAplMissing,
+            ClaimParseError::MetadataAplInvalid
         );
     }
 
@@ -662,6 +694,22 @@ mod negative_tests {
         let mut v = base();
         v.as_object_mut().unwrap().remove("claim");
         assert_eq!(Claim::parse(&v), Err(ClaimParseError::ClaimMissing));
+    }
+
+    #[test]
+    fn claim_present_but_not_object_emits_claim_invalid() {
+        let mut v = base();
+        v["claim"] = json!("not-an-object");
+        assert_eq!(Claim::parse(&v), Err(ClaimParseError::ClaimInvalid));
+
+        let mut v2 = base();
+        v2["claim"] = json!(42);
+        assert_eq!(Claim::parse(&v2), Err(ClaimParseError::ClaimInvalid));
+
+        let mut v3 = base();
+        v3["claim"] = json!(null);
+        // null is treated as "not an object" → ClaimInvalid (key is present, value is null)
+        assert_eq!(Claim::parse(&v3), Err(ClaimParseError::ClaimInvalid));
     }
 
     #[test]
