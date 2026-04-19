@@ -1,26 +1,24 @@
 //! APL/AI-Eval v0.1 profile per apl-ai-eval-profile.md.
-//!
-//! Gated behind the `profile-ai-eval` feature (enabled by default).
 
-pub mod bridge;
-pub mod claim;
-pub mod frame;
+use apl_core::core::bridge::Bridge;
+use apl_core::core::claim::Claim;
+use apl_core::core::frame::Frame;
+use apl_core::core::relation::RelationQuery;
+use apl_core::profile::trait_def::{BridgeCheckResult, Profile, ProfileCheckResult};
 
-use crate::core::bridge::Bridge;
-use crate::core::claim::Claim;
-use crate::core::frame::Frame;
-use crate::core::relation::RelationQuery;
-use crate::profile::trait_def::{BridgeCheckResult, Profile, ProfileCheckResult};
+use crate::bridge;
+use crate::claim;
+use crate::frame;
 
 /// Allowed aspect identifiers for the APL/AI-Eval profile (apl-ai-eval-profile.md §3.4, §5.4).
-pub(super) const AI_EVAL_ALLOWED_ASPECTS: &[&str] =
+pub(crate) const AI_EVAL_ALLOWED_ASPECTS: &[&str] =
     &["accuracy", "judge-score", "pass-rate", "tool-success-rate"];
 
 /// Allowed unit strings for statement content (apl-ai-eval-profile.md §6.1).
-pub(super) const AI_EVAL_ALLOWED_UNITS: &[&str] = &["fraction", "percent", "points"];
+pub(crate) const AI_EVAL_ALLOWED_UNITS: &[&str] = &["fraction", "percent", "points"];
 
 /// Required exclusion markers that every AI-Eval frame MUST carry (apl-ai-eval-profile.md §5.5).
-pub(super) const AI_EVAL_REQUIRED_EXCLUSIONS: &[&str] = &[
+pub(crate) const AI_EVAL_REQUIRED_EXCLUSIONS: &[&str] = &[
     "no-production-readiness-claim",
     "no-deployment-safety-claim",
     "no-out-of-scope-generalization-claim",
@@ -35,7 +33,7 @@ pub(super) const AI_EVAL_REQUIRED_EXCLUSIONS: &[&str] = &[
 /// # Example
 ///
 /// ```
-/// use apl_core::profile::ai_eval::AiEvalProfile;
+/// use apl_ai_eval::AiEvalProfile;
 /// use apl_core::profile::trait_def::Profile;
 ///
 /// let profile = AiEvalProfile;
@@ -54,8 +52,8 @@ impl Profile for AiEvalProfile {
     /// # Errors
     ///
     /// Returns `Err(ProfileFailure)` if the claim violates any AI-Eval profile invariant.
-    fn check_claim(&self, claim: &Claim) -> ProfileCheckResult {
-        claim::check_claim(claim)
+    fn check_claim(&self, c: &Claim) -> ProfileCheckResult {
+        claim::check_claim(c)
     }
 
     /// Frame-level checks per apl-ai-eval-profile.md §5, §8.
@@ -63,8 +61,8 @@ impl Profile for AiEvalProfile {
     /// # Errors
     ///
     /// Returns `Err(ProfileFailure)` if the frame violates any AI-Eval frame invariant.
-    fn check_frame(&self, frame: &Frame) -> ProfileCheckResult {
-        frame::check_frame(frame)
+    fn check_frame(&self, f: &Frame) -> ProfileCheckResult {
+        frame::check_frame(f)
     }
 
     /// Joint claim+frame cross-check per apl-ai-eval-profile.md §5.4 and §6.2.
@@ -76,8 +74,8 @@ impl Profile for AiEvalProfile {
     /// # Errors
     ///
     /// Returns `Err(ProfileFailure)` if the pair violates either joint invariant.
-    fn cross_check(&self, claim: &Claim, frame: &Frame) -> ProfileCheckResult {
-        claim::cross_check(claim, frame)
+    fn cross_check(&self, c: &Claim, f: &Frame) -> ProfileCheckResult {
+        claim::cross_check(c, f)
     }
 
     /// Pairwise profile gate per apl-ai-eval-profile.md §7.1.
@@ -109,12 +107,12 @@ impl Profile for AiEvalProfile {
     /// profile constraints.
     fn check_bridge_applicability(
         &self,
-        bridge: &Bridge,
+        b: &Bridge,
         source_frame: &Frame,
         target_frame: &Frame,
         query: &RelationQuery,
     ) -> BridgeCheckResult {
-        bridge::check_ai_eval_bridge_applicability(bridge, source_frame, target_frame, query)
+        bridge::check_ai_eval_bridge_applicability(b, source_frame, target_frame, query)
     }
 }
 
@@ -125,11 +123,11 @@ impl Profile for AiEvalProfile {
 #[cfg(test)]
 mod mod_tests {
     use super::*;
-    use crate::core::bridge::Bridge;
-    use crate::core::claim::Claim;
-    use crate::core::frame::Frame;
-    use crate::core::relation::RelationQuery;
-    use crate::profile::trait_def::Profile;
+    use apl_core::core::bridge::Bridge;
+    use apl_core::core::claim::Claim;
+    use apl_core::core::frame::Frame;
+    use apl_core::core::relation::RelationQuery;
+    use apl_core::profile::trait_def::Profile;
     use serde_json::json;
 
     fn h(b: u8) -> String {

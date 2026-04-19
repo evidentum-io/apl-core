@@ -18,8 +18,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "apl-ai-eval"
+version = "0.1.0"
+dependencies = [
+ "apl-core",
+ "hex",
+ "pretty_assertions",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apl-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "atl-core",
  "hex",

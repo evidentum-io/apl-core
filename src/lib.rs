@@ -6,7 +6,7 @@
 //! - Structural validation of APL claims, frames, bridges and transformations
 //! - Single-receipt verification (apl-spec.md §11)
 //! - Pairwise relation evaluation (apl-relation-spec.md §7)
-//! - Pluggable vertical profiles (AI-Eval included)
+//! - Pluggable vertical profiles via the [`profile::trait_def::Profile`] trait
 //!
 //! It contains NO I/O operations and NO carrier cryptography. Carrier verification
 //! is delegated through the `CarrierVerifier` trait (apl-spec.md §15.1). The
@@ -18,7 +18,7 @@
 //! - Canonical equality helpers over JCS (wraps `atl-core::jcs`)
 //! - Trait-based resolvers (`FrameResolver`, `BridgeResolver`) with in-memory
 //!   defaults for testing
-//! - AI-Eval profile (gated behind `profile-ai-eval` feature)
+//! - Profile trait extension point for vertical profiles (e.g. `apl-ai-eval`)
 //!
 //! # What apl-core is NOT
 //!
@@ -55,15 +55,14 @@
 pub mod core;
 pub mod profile;
 
-mod diagnostics;
+pub mod diagnostics;
 mod error;
 mod failure;
 mod prelude;
 
 // Re-exports
-pub use diagnostics::Diagnostic;
+pub use diagnostics::DiagnosticCode;
 pub use error::{AplError, AplResult};
 pub use failure::FailureClass;
 #[allow(unused_imports)]
-// prelude is currently empty; items will be added in API-1
 pub use prelude::*;

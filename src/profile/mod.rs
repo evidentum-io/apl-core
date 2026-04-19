@@ -10,8 +10,3 @@
 
 pub mod trait_def;
 pub use trait_def::{BridgeCheckResult, Profile, ProfileCheckResult, ProfileFailure};
-
-#[cfg(feature = "profile-ai-eval")]
-pub mod ai_eval;
-#[cfg(feature = "profile-ai-eval")]
-pub use ai_eval::AiEvalProfile;

@@ -21,7 +21,7 @@ use crate::core::frame::{Frame, FrameParseError};
 use crate::core::jcs::canonical_hash;
 use crate::core::output::{CoreOutcome, RelationOutcome, VerifierOutput};
 use crate::core::resolver::{BridgeResolver, FrameResolution, FrameResolver};
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::{self as D, DiagnosticCode};
 use crate::failure::FailureClass;
 use crate::profile::trait_def::Profile;
 
@@ -60,7 +60,7 @@ pub fn verify_receipt(
     _bridges: &dyn BridgeResolver,
     profile: Option<&dyn Profile>,
 ) -> VerifierOutput {
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics: Vec<DiagnosticCode> = Vec::new();
 
     // ========== STEP 1 — carrier verification (§11.1, §15.1) ==========
     let carrier_result = carrier.verify_carrier(receipt_bytes);
@@ -68,11 +68,11 @@ pub fn verify_receipt(
         CarrierOutcome::Invalid { .. } => {
             return mk_invalid(
                 FailureClass::CarrierFailure,
-                vec![Diagnostic::CarrierInvalid, Diagnostic::FailureCarrier],
+                vec![D::CARRIER_INVALID, D::FAILURE_CARRIER],
             );
         }
         CarrierOutcome::Valid { metadata, .. } => {
-            diagnostics.push(Diagnostic::CarrierValid);
+            diagnostics.push(D::CARRIER_VALID);
             metadata
         }
     };
@@ -84,11 +84,11 @@ pub fn verify_receipt(
             return mk_invalid_with_prefix(
                 diagnostics,
                 FailureClass::ClaimStructureFailure,
-                vec![Diagnostic::AplMissing, Diagnostic::FailureClaimStructure],
+                vec![D::APL_MISSING, D::FAILURE_CLAIM_STRUCTURE],
             );
         }
     };
-    diagnostics.push(Diagnostic::AplPresent);
+    diagnostics.push(D::APL_PRESENT);
 
     // ========== STEPS 3+4 — claim structure & frame_ref.hash (§11.3, §11.4) ==========
     let claim = match Claim::parse(&apl_v) {
@@ -98,7 +98,7 @@ pub fn verify_receipt(
             return mk_invalid_with_prefix(diagnostics, fc, diag_tail);
         }
     };
-    diagnostics.push(Diagnostic::AplFrameBound);
+    diagnostics.push(D::APL_FRAME_BOUND);
 
     // ========== STEP 5 — resolve frame (§11.5, §16.2) ==========
     let frame_value = match frames.resolve(&claim.frame_ref.hash) {
@@ -107,7 +107,7 @@ pub fn verify_receipt(
             return mk_invalid_with_prefix(
                 diagnostics,
                 FailureClass::FrameFailure,
-                vec![Diagnostic::AplFrameUnresolved, Diagnostic::FailureFrame],
+                vec![D::APL_FRAME_UNRESOLVED, D::FAILURE_FRAME],
             );
         }
     };
@@ -118,7 +118,7 @@ pub fn verify_receipt(
         return mk_invalid_with_prefix(
             diagnostics,
             FailureClass::FrameFailure,
-            vec![Diagnostic::AplFrameHashMismatch, Diagnostic::FailureFrame],
+            vec![D::APL_FRAME_HASH_MISMATCH, D::FAILURE_FRAME],
         );
     }
 
@@ -137,10 +137,7 @@ pub fn verify_receipt(
             return mk_invalid_with_prefix(
                 diagnostics,
                 FailureClass::SemanticLinkageFailure,
-                vec![
-                    Diagnostic::AplAspectRefOutOfFrame,
-                    Diagnostic::FailureSemanticLinkage,
-                ],
+                vec![D::APL_ASPECT_REF_OUT_OF_FRAME, D::FAILURE_SEMANTIC_LINKAGE],
             );
         }
     }
@@ -179,13 +176,13 @@ pub fn verify_receipt(
     // Already enforced inside Claim::parse; no extra work here.
 
     // ========== STEP 10 — core outcome (§11.10) ==========
-    diagnostics.push(Diagnostic::AplValid);
+    diagnostics.push(D::APL_VALID);
 
     // ========== STEP 11 — cross-frame detection (§11.11, §5.9) ==========
     if claim.is_cross_frame() {
-        diagnostics.push(Diagnostic::CrossFrame);
+        diagnostics.push(D::CROSS_FRAME);
     } else {
-        diagnostics.push(Diagnostic::SameFrame);
+        diagnostics.push(D::SAME_FRAME);
     }
 
     // ========== STEP 12 — bridge MAY be checked (§11.12) ==========
@@ -193,9 +190,9 @@ pub fn verify_receipt(
 
     // ========== STEP 13 — transformation declaration (§11.13, §8.3) ==========
     if claim.transformation_refs.is_some() {
-        diagnostics.push(Diagnostic::TransformationDeclared);
+        diagnostics.push(D::TRANSFORMATION_DECLARED);
     } else {
-        diagnostics.push(Diagnostic::TransformationMissing);
+        diagnostics.push(D::TRANSFORMATION_MISSING);
     }
 
     // ========== STEP 14 — return (§11.14) ==========
@@ -211,7 +208,7 @@ pub fn verify_receipt(
 // Private helpers
 // ---------------------------------------------------------------------------
 
-fn mk_invalid(class: FailureClass, diagnostics: Vec<Diagnostic>) -> VerifierOutput {
+fn mk_invalid(class: FailureClass, diagnostics: Vec<DiagnosticCode>) -> VerifierOutput {
     VerifierOutput {
         core_outcome: CoreOutcome::AplInvalid,
         relation_outcome: RelationOutcome::RelationNotEvaluated,
@@ -221,9 +218,9 @@ fn mk_invalid(class: FailureClass, diagnostics: Vec<Diagnostic>) -> VerifierOutp
 }
 
 fn mk_invalid_with_prefix(
-    mut prefix: Vec<Diagnostic>,
+    mut prefix: Vec<DiagnosticCode>,
     class: FailureClass,
-    tail: Vec<Diagnostic>,
+    tail: Vec<DiagnosticCode>,
 ) -> VerifierOutput {
     prefix.extend(tail);
     VerifierOutput {
@@ -234,134 +231,138 @@ fn mk_invalid_with_prefix(
     }
 }
 
-fn map_claim_parse_error(e: ClaimParseError) -> (FailureClass, Vec<Diagnostic>) {
+fn map_claim_parse_error(e: ClaimParseError) -> (FailureClass, Vec<DiagnosticCode>) {
     use ClaimParseError as E;
-    use Diagnostic as D;
     use FailureClass as F;
     match e {
         E::MetadataAplMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplMissing, D::FailureClaimStructure],
+            vec![D::APL_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::VersionMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplVersionMissing, D::FailureClaimStructure],
+            vec![D::APL_VERSION_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::VersionInvalid | E::VersionUnsupported { .. } => (
             F::ClaimStructureFailure,
-            vec![D::AplVersionUnsupported, D::FailureClaimStructure],
+            vec![D::APL_VERSION_UNSUPPORTED, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::ClaimMissing | E::ClaimNotObject => (
             F::ClaimStructureFailure,
-            vec![D::AplClaimMissing, D::FailureClaimStructure],
+            vec![D::APL_CLAIM_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::ClaimKindMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplClaimKindMissing, D::FailureClaimStructure],
+            vec![D::APL_CLAIM_KIND_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::ClaimKindUnsupported { .. } => (
             F::ClaimStructureFailure,
-            vec![D::AplClaimKindUnsupported, D::FailureClaimStructure],
+            vec![D::APL_CLAIM_KIND_UNSUPPORTED, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::SubjectMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplSubjectMissing, D::FailureClaimStructure],
+            vec![D::APL_SUBJECT_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::SubjectInvalid | E::SubjectMissingIdAndDigest => (
             F::ClaimStructureFailure,
-            vec![D::AplSubjectInvalid, D::FailureClaimStructure],
+            vec![D::APL_SUBJECT_INVALID, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::SubjectIdInvalid => (
             F::ClaimStructureFailure,
-            vec![D::AplSubjectIdInvalid, D::FailureClaimStructure],
+            vec![D::APL_SUBJECT_ID_INVALID, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::SubjectDigestInvalid => (
             F::ClaimStructureFailure,
-            vec![D::AplSubjectDigestInvalid, D::FailureClaimStructure],
+            vec![D::APL_SUBJECT_DIGEST_INVALID, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::AspectRefsMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplAspectRefsMissing, D::FailureClaimStructure],
+            vec![D::APL_ASPECT_REFS_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::AspectRefsInvalid => (
             F::ClaimStructureFailure,
-            vec![D::AplAspectRefsInvalid, D::FailureClaimStructure],
+            vec![D::APL_ASPECT_REFS_INVALID, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::StatementMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplStatementMissing, D::FailureClaimStructure],
+            vec![D::APL_STATEMENT_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::StatementInvalid => (
             F::ClaimStructureFailure,
-            vec![D::AplStatementInvalid, D::FailureClaimStructure],
+            vec![D::APL_STATEMENT_INVALID, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::PredicateMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplPredicateMissing, D::FailureClaimStructure],
+            vec![D::APL_PREDICATE_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::ContentMissing => (
             F::ClaimStructureFailure,
-            vec![D::AplContentMissing, D::FailureClaimStructure],
+            vec![D::APL_CONTENT_MISSING, D::FAILURE_CLAIM_STRUCTURE],
         ),
         E::FrameRefMissing | E::FrameRefInvalid => (
             F::ReferenceFailure,
-            vec![D::AplFrameRefInvalid, D::FailureReference],
+            vec![D::APL_FRAME_REF_INVALID, D::FAILURE_REFERENCE],
         ),
         E::RelatedFramesInvalid => (
             F::RelationStructureFailure,
-            vec![D::AplRelatedFramesInvalid, D::FailureRelationStructure],
+            vec![D::APL_RELATED_FRAMES_INVALID, D::FAILURE_RELATION_STRUCTURE],
         ),
         E::BridgeRefsInvalid => (
             F::RelationStructureFailure,
-            vec![D::AplBridgeRefsInvalid, D::FailureRelationStructure],
+            vec![D::APL_BRIDGE_REFS_INVALID, D::FAILURE_RELATION_STRUCTURE],
         ),
         E::TransformationRefsInvalid => (
             F::RelationStructureFailure,
-            vec![D::AplTransformationRefsInvalid, D::FailureRelationStructure],
+            vec![
+                D::APL_TRANSFORMATION_REFS_INVALID,
+                D::FAILURE_RELATION_STRUCTURE,
+            ],
         ),
     }
 }
 
-fn map_frame_parse_error(e: FrameParseError) -> (FailureClass, Vec<Diagnostic>) {
-    use Diagnostic as D;
+fn map_frame_parse_error(e: FrameParseError) -> (FailureClass, Vec<DiagnosticCode>) {
     use FailureClass as F;
     use FrameParseError as E;
     match e {
         E::FrameNotObject | E::FrameKernelValueInvalid | E::FrameExtendsInvalid => (
             F::FrameFailure,
-            vec![D::AplFrameKernelMissing, D::FailureFrame],
+            vec![D::APL_FRAME_KERNEL_MISSING, D::FAILURE_FRAME],
         ),
         E::FrameVersionMissing => (
             F::FrameFailure,
-            vec![D::AplFrameVersionMissing, D::FailureFrame],
+            vec![D::APL_FRAME_VERSION_MISSING, D::FAILURE_FRAME],
         ),
         E::FrameVersionUnsupported { .. } => (
             F::FrameFailure,
-            vec![D::AplFrameVersionUnsupported, D::FailureFrame],
+            vec![D::APL_FRAME_VERSION_UNSUPPORTED, D::FAILURE_FRAME],
         ),
         E::FrameObserverInvalid => (
             F::FrameFailure,
-            vec![D::AplFrameObserverInvalid, D::FailureFrame],
+            vec![D::APL_FRAME_OBSERVER_INVALID, D::FAILURE_FRAME],
         ),
         E::FrameAspectInvalid => (
             F::FrameFailure,
-            vec![D::AplFrameAspectInvalid, D::FailureFrame],
+            vec![D::APL_FRAME_ASPECT_INVALID, D::FAILURE_FRAME],
         ),
         E::FrameInvarianceInvalid => (
             F::FrameFailure,
-            vec![D::AplFrameInvarianceInvalid, D::FailureFrame],
+            vec![D::APL_FRAME_INVARIANCE_INVALID, D::FAILURE_FRAME],
         ),
         E::FrameExclusionsInvalid => (
             F::FrameFailure,
-            vec![D::AplFrameExclusionsInvalid, D::FailureFrame],
+            vec![D::APL_FRAME_EXCLUSIONS_INVALID, D::FAILURE_FRAME],
         ),
         E::FrameProcedureOrInstrumentMissing => (
             F::FrameFailure,
-            vec![D::AplFrameProcedureOrInstrumentMissing, D::FailureFrame],
+            vec![
+                D::APL_FRAME_PROCEDURE_OR_INSTRUMENT_MISSING,
+                D::FAILURE_FRAME,
+            ],
         ),
         E::FrameScopeOrResolutionMissing => (
             F::FrameFailure,
-            vec![D::AplFrameScopeOrResolutionMissing, D::FailureFrame],
+            vec![D::APL_FRAME_SCOPE_OR_RESOLUTION_MISSING, D::FAILURE_FRAME],
         ),
     }
 }
@@ -390,7 +391,7 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
     _bridges: &dyn BridgeResolver,
     profile: Option<&dyn Profile>,
 ) -> (VerifierOutput, Option<Claim>, Option<Frame>) {
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics: Vec<DiagnosticCode> = Vec::new();
 
     // STEP 1 — carrier
     let carrier_result = carrier.verify_carrier(receipt_bytes);
@@ -399,14 +400,14 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
             return (
                 mk_invalid(
                     FailureClass::CarrierFailure,
-                    vec![Diagnostic::CarrierInvalid, Diagnostic::FailureCarrier],
+                    vec![D::CARRIER_INVALID, D::FAILURE_CARRIER],
                 ),
                 None,
                 None,
             );
         }
         CarrierOutcome::Valid { metadata, .. } => {
-            diagnostics.push(Diagnostic::CarrierValid);
+            diagnostics.push(D::CARRIER_VALID);
             metadata
         }
     };
@@ -419,14 +420,14 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
                 mk_invalid_with_prefix(
                     diagnostics,
                     FailureClass::ClaimStructureFailure,
-                    vec![Diagnostic::AplMissing, Diagnostic::FailureClaimStructure],
+                    vec![D::APL_MISSING, D::FAILURE_CLAIM_STRUCTURE],
                 ),
                 None,
                 None,
             );
         }
     };
-    diagnostics.push(Diagnostic::AplPresent);
+    diagnostics.push(D::APL_PRESENT);
 
     // STEPS 3+4 — claim structure
     let claim = match Claim::parse(&apl_v) {
@@ -440,7 +441,7 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
             );
         }
     };
-    diagnostics.push(Diagnostic::AplFrameBound);
+    diagnostics.push(D::APL_FRAME_BOUND);
 
     // STEP 5 — resolve frame
     let frame_value = match frames.resolve(&claim.frame_ref.hash) {
@@ -450,7 +451,7 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
                 mk_invalid_with_prefix(
                     diagnostics,
                     FailureClass::FrameFailure,
-                    vec![Diagnostic::AplFrameUnresolved, Diagnostic::FailureFrame],
+                    vec![D::APL_FRAME_UNRESOLVED, D::FAILURE_FRAME],
                 ),
                 Some(claim),
                 None,
@@ -465,7 +466,7 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
             mk_invalid_with_prefix(
                 diagnostics,
                 FailureClass::FrameFailure,
-                vec![Diagnostic::AplFrameHashMismatch, Diagnostic::FailureFrame],
+                vec![D::APL_FRAME_HASH_MISMATCH, D::FAILURE_FRAME],
             ),
             Some(claim),
             None,
@@ -492,10 +493,7 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
                 mk_invalid_with_prefix(
                     diagnostics,
                     FailureClass::SemanticLinkageFailure,
-                    vec![
-                        Diagnostic::AplAspectRefOutOfFrame,
-                        Diagnostic::FailureSemanticLinkage,
-                    ],
+                    vec![D::APL_ASPECT_REF_OUT_OF_FRAME, D::FAILURE_SEMANTIC_LINKAGE],
                 ),
                 Some(claim),
                 Some(frame),
@@ -531,20 +529,20 @@ pub(crate) fn verify_receipt_with_claim_and_frame(
     // STEP 9 — relation-layer structural conformance (already in Claim::parse)
 
     // STEP 10 — core outcome
-    diagnostics.push(Diagnostic::AplValid);
+    diagnostics.push(D::APL_VALID);
 
     // STEP 11 — cross-frame detection
     if claim.is_cross_frame() {
-        diagnostics.push(Diagnostic::CrossFrame);
+        diagnostics.push(D::CROSS_FRAME);
     } else {
-        diagnostics.push(Diagnostic::SameFrame);
+        diagnostics.push(D::SAME_FRAME);
     }
 
     // STEP 13 — transformation declaration
     if claim.transformation_refs.is_some() {
-        diagnostics.push(Diagnostic::TransformationDeclared);
+        diagnostics.push(D::TRANSFORMATION_DECLARED);
     } else {
-        diagnostics.push(Diagnostic::TransformationMissing);
+        diagnostics.push(D::TRANSFORMATION_MISSING);
     }
 
     let output = VerifierOutput {
@@ -566,6 +564,7 @@ mod tests {
 
     use super::*;
     use crate::core::resolver::{InMemoryBridgeResolver, InMemoryFrameResolver};
+    use crate::diagnostics as diag;
     use crate::profile::trait_def::{ProfileCheckResult, ProfileFailure};
 
     // ---- Fixtures ----
@@ -628,9 +627,9 @@ mod tests {
         assert_eq!(out.failure_classes, vec![FailureClass::CarrierFailure]);
         assert_eq!(
             out.diagnostics,
-            vec![Diagnostic::CarrierInvalid, Diagnostic::FailureCarrier]
+            vec![diag::CARRIER_INVALID, diag::FAILURE_CARRIER]
         );
-        assert!(!out.diagnostics.contains(&Diagnostic::AplPresent));
+        assert!(!out.diagnostics.contains(&diag::APL_PRESENT));
     }
 
     // ---- AC2: metadata.apl missing ----
@@ -647,8 +646,8 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert_eq!(out.diagnostics[0], Diagnostic::CarrierValid);
-        assert!(out.diagnostics.contains(&Diagnostic::AplMissing));
+        assert_eq!(out.diagnostics[0], diag::CARRIER_VALID);
+        assert!(out.diagnostics.contains(&diag::APL_MISSING));
     }
 
     // ---- AC3: frame_ref missing ----
@@ -673,7 +672,7 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::ReferenceFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameRefInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_REF_INVALID));
     }
 
     // ---- AC4: frame not resolved ----
@@ -699,7 +698,7 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameUnresolved));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
     }
 
     // ---- AC5: hash mismatch ----
@@ -726,7 +725,7 @@ mod tests {
         let carrier = stub_valid(json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameHashMismatch));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_HASH_MISMATCH));
     }
 
     // ---- AC6: frame kernel failure ----
@@ -759,7 +758,7 @@ mod tests {
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplFrameProcedureOrInstrumentMissing));
+            .contains(&diag::APL_FRAME_PROCEDURE_OR_INSTRUMENT_MISSING));
     }
 
     // ---- AC7: aspect linkage failure ----
@@ -785,9 +784,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::SemanticLinkageFailure]
         );
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplAspectRefOutOfFrame));
+        assert!(out.diagnostics.contains(&diag::APL_ASPECT_REF_OUT_OF_FRAME));
     }
 
     // ---- AC8: happy path ----
@@ -818,12 +815,12 @@ mod tests {
         assert!(out.failure_classes.is_empty());
 
         let expected = [
-            Diagnostic::CarrierValid,
-            Diagnostic::AplPresent,
-            Diagnostic::AplFrameBound,
-            Diagnostic::AplValid,
-            Diagnostic::SameFrame,
-            Diagnostic::TransformationMissing,
+            diag::CARRIER_VALID,
+            diag::APL_PRESENT,
+            diag::APL_FRAME_BOUND,
+            diag::APL_VALID,
+            diag::SAME_FRAME,
+            diag::TRANSFORMATION_MISSING,
         ];
         for d in expected {
             assert!(out.diagnostics.contains(&d), "missing {d:?}");
@@ -851,8 +848,8 @@ mod tests {
         });
         let carrier = stub_valid(json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
-        assert!(out.diagnostics.contains(&Diagnostic::CrossFrame));
-        assert!(!out.diagnostics.contains(&Diagnostic::SameFrame));
+        assert!(out.diagnostics.contains(&diag::CROSS_FRAME));
+        assert!(!out.diagnostics.contains(&diag::SAME_FRAME));
     }
 
     // ---- AC10: transformation declared ----
@@ -875,10 +872,8 @@ mod tests {
         });
         let carrier = stub_valid(json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::TransformationDeclared));
-        assert!(!out.diagnostics.contains(&Diagnostic::TransformationMissing));
+        assert!(out.diagnostics.contains(&diag::TRANSFORMATION_DECLARED));
+        assert!(!out.diagnostics.contains(&diag::TRANSFORMATION_MISSING));
     }
 
     // ---- AC11: never panics ----
@@ -894,7 +889,7 @@ mod tests {
             None,
         );
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
-        assert!(out.diagnostics.contains(&Diagnostic::AplMissing));
+        assert!(out.diagnostics.contains(&diag::APL_MISSING));
     }
 
     #[test]
@@ -965,13 +960,13 @@ mod tests {
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
 
         let diags = &out.diagnostics;
-        let pos = |d: Diagnostic| diags.iter().position(|x| *x == d).expect("present");
+        let pos = |d: DiagnosticCode| diags.iter().position(|x| *x == d).expect("present");
 
-        assert!(pos(Diagnostic::CarrierValid) < pos(Diagnostic::AplPresent));
-        assert!(pos(Diagnostic::AplPresent) < pos(Diagnostic::AplFrameBound));
-        assert!(pos(Diagnostic::AplFrameBound) < pos(Diagnostic::AplValid));
-        assert!(pos(Diagnostic::AplValid) < pos(Diagnostic::SameFrame));
-        assert!(pos(Diagnostic::SameFrame) < pos(Diagnostic::TransformationMissing));
+        assert!(pos(diag::CARRIER_VALID) < pos(diag::APL_PRESENT));
+        assert!(pos(diag::APL_PRESENT) < pos(diag::APL_FRAME_BOUND));
+        assert!(pos(diag::APL_FRAME_BOUND) < pos(diag::APL_VALID));
+        assert!(pos(diag::APL_VALID) < pos(diag::SAME_FRAME));
+        assert!(pos(diag::SAME_FRAME) < pos(diag::TRANSFORMATION_MISSING));
     }
 
     // ---- AC14: profile hook failure preserves prior diagnostics ----
@@ -988,7 +983,7 @@ mod tests {
             fn check_claim(&self, _: &Claim) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::ClaimStructureFailure,
-                    diagnostics: vec![Diagnostic::AplClaimKindUnsupported],
+                    diagnostics: vec![diag::APL_CLAIM_KIND_UNSUPPORTED],
                 })
             }
         }
@@ -1020,12 +1015,10 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplClaimKindUnsupported));
-        assert!(out.diagnostics.contains(&Diagnostic::CarrierValid));
-        assert!(out.diagnostics.contains(&Diagnostic::AplPresent));
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameBound));
+        assert!(out.diagnostics.contains(&diag::APL_CLAIM_KIND_UNSUPPORTED));
+        assert!(out.diagnostics.contains(&diag::CARRIER_VALID));
+        assert!(out.diagnostics.contains(&diag::APL_PRESENT));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_BOUND));
     }
 
     // ---- AC15: cross_check invoked after both check_claim and check_frame pass ----
@@ -1042,7 +1035,7 @@ mod tests {
             fn cross_check(&self, _c: &Claim, _f: &Frame) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::SemanticLinkageFailure,
-                    diagnostics: vec![Diagnostic::AplAspectRefOutOfFrame],
+                    diagnostics: vec![diag::APL_ASPECT_REF_OUT_OF_FRAME],
                 })
             }
         }
@@ -1069,12 +1062,10 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::SemanticLinkageFailure]
         );
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplAspectRefOutOfFrame));
-        assert!(out.diagnostics.contains(&Diagnostic::CarrierValid));
-        assert!(out.diagnostics.contains(&Diagnostic::AplPresent));
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameBound));
+        assert!(out.diagnostics.contains(&diag::APL_ASPECT_REF_OUT_OF_FRAME));
+        assert!(out.diagnostics.contains(&diag::CARRIER_VALID));
+        assert!(out.diagnostics.contains(&diag::APL_PRESENT));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_BOUND));
     }
 
     // ---- AC16: short-circuit when check_claim fails ----
@@ -1097,7 +1088,7 @@ mod tests {
             fn check_claim(&self, _: &Claim) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::ClaimStructureFailure,
-                    diagnostics: vec![Diagnostic::AplClaimMissing],
+                    diagnostics: vec![diag::APL_CLAIM_MISSING],
                 })
             }
 
@@ -1170,7 +1161,7 @@ mod tests {
             fn check_frame(&self, _: &Frame) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::FrameFailure,
-                    diagnostics: vec![Diagnostic::AplFrameKernelMissing],
+                    diagnostics: vec![diag::APL_FRAME_KERNEL_MISSING],
                 })
             }
 
@@ -1239,9 +1230,9 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplVersionMissing));
-        assert!(!out.diagnostics.contains(&Diagnostic::AplClaimMissing));
-        assert!(!out.diagnostics.contains(&Diagnostic::AplVersionUnsupported));
+        assert!(out.diagnostics.contains(&diag::APL_VERSION_MISSING));
+        assert!(!out.diagnostics.contains(&diag::APL_CLAIM_MISSING));
+        assert!(!out.diagnostics.contains(&diag::APL_VERSION_UNSUPPORTED));
     }
 
     // ---- Resolver error treated as frame failure ----
@@ -1275,7 +1266,7 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameUnresolved));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_UNRESOLVED));
     }
 
     // ---- verify_receipt with passing profile (covers closing `}` at line 175) --
@@ -1348,7 +1339,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplVersionUnsupported));
+        assert!(out.diagnostics.contains(&diag::APL_VERSION_UNSUPPORTED));
     }
 
     #[test]
@@ -1371,7 +1362,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplVersionUnsupported));
+        assert!(out.diagnostics.contains(&diag::APL_VERSION_UNSUPPORTED));
     }
 
     #[test]
@@ -1393,7 +1384,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplClaimMissing));
+        assert!(out.diagnostics.contains(&diag::APL_CLAIM_MISSING));
     }
 
     #[test]
@@ -1416,7 +1407,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplClaimMissing));
+        assert!(out.diagnostics.contains(&diag::APL_CLAIM_MISSING));
     }
 
     #[test]
@@ -1443,7 +1434,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplClaimKindMissing));
+        assert!(out.diagnostics.contains(&diag::APL_CLAIM_KIND_MISSING));
     }
 
     #[test]
@@ -1471,9 +1462,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplClaimKindUnsupported));
+        assert!(out.diagnostics.contains(&diag::APL_CLAIM_KIND_UNSUPPORTED));
     }
 
     #[test]
@@ -1500,7 +1489,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectMissing));
+        assert!(out.diagnostics.contains(&diag::APL_SUBJECT_MISSING));
     }
 
     #[test]
@@ -1528,7 +1517,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_SUBJECT_INVALID));
     }
 
     #[test]
@@ -1556,7 +1545,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_SUBJECT_INVALID));
     }
 
     #[test]
@@ -1584,7 +1573,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplSubjectIdInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_SUBJECT_ID_INVALID));
     }
 
     #[test]
@@ -1612,9 +1601,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplSubjectDigestInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_SUBJECT_DIGEST_INVALID));
     }
 
     #[test]
@@ -1641,7 +1628,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplAspectRefsMissing));
+        assert!(out.diagnostics.contains(&diag::APL_ASPECT_REFS_MISSING));
     }
 
     #[test]
@@ -1669,7 +1656,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplAspectRefsInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_ASPECT_REFS_INVALID));
     }
 
     #[test]
@@ -1696,7 +1683,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplStatementMissing));
+        assert!(out.diagnostics.contains(&diag::APL_STATEMENT_MISSING));
     }
 
     #[test]
@@ -1724,7 +1711,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplStatementInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_STATEMENT_INVALID));
     }
 
     #[test]
@@ -1752,7 +1739,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplPredicateMissing));
+        assert!(out.diagnostics.contains(&diag::APL_PREDICATE_MISSING));
     }
 
     #[test]
@@ -1780,7 +1767,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::ClaimStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplContentMissing));
+        assert!(out.diagnostics.contains(&diag::APL_CONTENT_MISSING));
     }
 
     #[test]
@@ -1800,7 +1787,7 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::ReferenceFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameRefInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_REF_INVALID));
     }
 
     #[test]
@@ -1829,9 +1816,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::RelationStructureFailure]
         );
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplRelatedFramesInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_RELATED_FRAMES_INVALID));
     }
 
     #[test]
@@ -1855,7 +1840,7 @@ mod tests {
             out.failure_classes,
             vec![FailureClass::RelationStructureFailure]
         );
-        assert!(out.diagnostics.contains(&Diagnostic::AplBridgeRefsInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_BRIDGE_REFS_INVALID));
     }
 
     #[test]
@@ -1881,7 +1866,7 @@ mod tests {
         );
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplTransformationRefsInvalid));
+            .contains(&diag::APL_TRANSFORMATION_REFS_INVALID));
     }
 
     // ---- FrameParseError coverage: every map_frame_parse_error arm ----
@@ -1905,7 +1890,7 @@ mod tests {
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_KERNEL_MISSING));
     }
 
     #[test]
@@ -1931,9 +1916,7 @@ mod tests {
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplFrameVersionMissing));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_VERSION_MISSING));
     }
 
     #[test]
@@ -1962,7 +1945,7 @@ mod tests {
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplFrameVersionUnsupported));
+            .contains(&diag::APL_FRAME_VERSION_UNSUPPORTED));
     }
 
     #[test]
@@ -1988,9 +1971,7 @@ mod tests {
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplFrameObserverInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_OBSERVER_INVALID));
     }
 
     #[test]
@@ -2017,7 +1998,7 @@ mod tests {
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameAspectInvalid));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_ASPECT_INVALID));
     }
 
     #[test]
@@ -2046,7 +2027,7 @@ mod tests {
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplFrameInvarianceInvalid));
+            .contains(&diag::APL_FRAME_INVARIANCE_INVALID));
     }
 
     #[test]
@@ -2075,7 +2056,7 @@ mod tests {
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplFrameExclusionsInvalid));
+            .contains(&diag::APL_FRAME_EXCLUSIONS_INVALID));
     }
 
     #[test]
@@ -2103,7 +2084,7 @@ mod tests {
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplFrameScopeOrResolutionMissing));
+            .contains(&diag::APL_FRAME_SCOPE_OR_RESOLUTION_MISSING));
     }
 
     #[test]
@@ -2131,7 +2112,7 @@ mod tests {
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_KERNEL_MISSING));
     }
 
     #[test]
@@ -2159,7 +2140,7 @@ mod tests {
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_KERNEL_MISSING));
     }
 
     // ---- cross_check path: profile check_frame failure ----
@@ -2176,7 +2157,7 @@ mod tests {
             fn check_frame(&self, _: &Frame) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::FrameFailure,
-                    diagnostics: vec![Diagnostic::AplFrameObserverInvalid],
+                    diagnostics: vec![diag::APL_FRAME_OBSERVER_INVALID],
                 })
             }
         }
@@ -2205,12 +2186,10 @@ mod tests {
 
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplFrameObserverInvalid));
-        assert!(out.diagnostics.contains(&Diagnostic::CarrierValid));
-        assert!(out.diagnostics.contains(&Diagnostic::AplPresent));
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameBound));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_OBSERVER_INVALID));
+        assert!(out.diagnostics.contains(&diag::CARRIER_VALID));
+        assert!(out.diagnostics.contains(&diag::APL_PRESENT));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_BOUND));
     }
 
     // ---- verify_receipt_with_claim_and_frame direct coverage ----------------
@@ -2244,7 +2223,7 @@ mod tests {
             None,
         );
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
-        assert!(out.diagnostics.contains(&Diagnostic::AplMissing));
+        assert!(out.diagnostics.contains(&diag::APL_MISSING));
         assert!(claim.is_none());
         assert!(frame.is_none());
     }
@@ -2287,7 +2266,7 @@ mod tests {
             None,
         );
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
-        assert!(out.diagnostics.contains(&Diagnostic::AplMissing));
+        assert!(out.diagnostics.contains(&diag::APL_MISSING));
         assert!(claim.is_none());
         assert!(frame.is_none());
     }
@@ -2375,7 +2354,7 @@ mod tests {
             None,
         );
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
-        assert!(out.diagnostics.contains(&Diagnostic::AplFrameHashMismatch));
+        assert!(out.diagnostics.contains(&diag::APL_FRAME_HASH_MISMATCH));
         assert!(claim.is_some());
         assert!(frame.is_none());
     }
@@ -2456,7 +2435,7 @@ mod tests {
             fn check_claim(&self, _: &Claim) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::ClaimStructureFailure,
-                    diagnostics: vec![Diagnostic::AplClaimKindUnsupported],
+                    diagnostics: vec![diag::APL_CLAIM_KIND_UNSUPPORTED],
                 })
             }
         }
@@ -2497,7 +2476,7 @@ mod tests {
             fn check_frame(&self, _: &Frame) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::FrameFailure,
-                    diagnostics: vec![Diagnostic::AplFrameKernelMissing],
+                    diagnostics: vec![diag::APL_FRAME_KERNEL_MISSING],
                 })
             }
         }
@@ -2538,7 +2517,7 @@ mod tests {
             fn cross_check(&self, _: &Claim, _: &Frame) -> ProfileCheckResult {
                 Err(ProfileFailure {
                     failure_class: FailureClass::SemanticLinkageFailure,
-                    diagnostics: vec![Diagnostic::AplAspectRefOutOfFrame],
+                    diagnostics: vec![diag::APL_ASPECT_REF_OUT_OF_FRAME],
                 })
             }
         }
@@ -2660,8 +2639,8 @@ mod tests {
             None,
         );
         assert_eq!(out.core_outcome, CoreOutcome::AplValid);
-        assert!(out.diagnostics.contains(&Diagnostic::CrossFrame));
-        assert!(!out.diagnostics.contains(&Diagnostic::SameFrame));
+        assert!(out.diagnostics.contains(&diag::CROSS_FRAME));
+        assert!(!out.diagnostics.contains(&diag::SAME_FRAME));
     }
 
     #[test]
@@ -2689,8 +2668,6 @@ mod tests {
             None,
         );
         assert_eq!(out.core_outcome, CoreOutcome::AplValid);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::TransformationDeclared));
+        assert!(out.diagnostics.contains(&diag::TRANSFORMATION_DECLARED));
     }
 }

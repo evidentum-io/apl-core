@@ -1,6 +1,9 @@
+[workspace]
+members = ["apl-ai-eval"]
+
 [package]
 name = "apl-core"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 rust-version = "1.75.0"
 license = "Apache-2.0"
@@ -34,6 +37,5 @@ proptest = "1"
 pretty_assertions = "1"
 
 [features]
-default = ["profile-ai-eval"]
-profile-ai-eval = []
+default = []
 # Future profiles will gate here (e.g. profile-photojournalism).
