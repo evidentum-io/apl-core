@@ -20,6 +20,7 @@ pub use frame::{Frame, FrameParseError, Observer, StringOrObject};
 pub use hash::{parse_hash_string, Hash, ParseError, Reference};
 pub use jcs::{canonical_bytes, canonical_equal, canonical_equal_after_strip, canonical_hash};
 pub use output::{CoreOutcome, RelationOutcome, VerifierOutput};
+pub use relation::{RelationQuery, RelationQueryParseError};
 pub use resolver::{
     BridgeResolution, BridgeResolver, FrameResolution, FrameResolver, InMemoryBridgeResolver,
     InMemoryFrameResolver,
