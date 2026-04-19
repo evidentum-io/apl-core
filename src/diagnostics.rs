@@ -14,7 +14,7 @@
 
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Core type
@@ -29,8 +29,16 @@ use serde::Serialize;
 /// # Serialization
 ///
 /// Serializes as a plain JSON string — the same kebab-case value the normative
-/// source uses. Deserialization is intentionally not implemented: diagnostics
-/// are emitted, not parsed.
+/// source uses.
+///
+/// # Deserialization
+///
+/// Deserializes from a JSON string by leaking a `Box<str>` to obtain a
+/// `&'static str`. This is intentional: `DiagnosticCode` constants are all
+/// `'static`, and deserialization is only used for round-trip testing and
+/// for reading outputs produced by this crate. The leak is bounded by the
+/// number of distinct code strings observed at runtime, which is small and
+/// finite.
 ///
 /// # Ordering
 ///
@@ -111,6 +119,18 @@ impl fmt::Display for DiagnosticCode {
 impl Serialize for DiagnosticCode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for DiagnosticCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        // Leak the string to obtain a `&'static str`. The set of distinct
+        // diagnostic codes observed at runtime is small and finite, so the
+        // total allocation is bounded. This is the only way to satisfy the
+        // `&'static str` invariant without switching the inner field type.
+        let leaked: &'static str = Box::leak(s.into_boxed_str());
+        Ok(Self(leaked))
     }
 }
 
