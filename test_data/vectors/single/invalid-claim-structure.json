@@ -1,0 +1,45 @@
+{
+  "name": "invalid-claim-structure",
+  "description": "Receipt where claim.statement.predicate is absent — violates structural typing rule at apl-spec.md §5.7. Core verifier must return apl-invalid + claim-structure-failure.",
+  "source": "fabricated — missing claim.statement.predicate",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "model:acme-gpt-7b-build-42"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "content": {
+          "benchmark": "MMLU",
+          "value": 0.781,
+          "unit": "fraction"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "procedure": "benchmark-run",
+      "aspect": ["accuracy"],
+      "scope": "mmlu/dev",
+      "invariance": ["JSON serialization of score object"],
+      "exclusions": ["no claim about deployment safety"]
+    }
+  ],
+  "bridges": [],
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-invalid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": ["claim-structure-failure"],
+    "diagnostics_contains": ["carrier-valid", "apl-present"],
+    "diagnostics_absent": ["apl-valid"]
+  }
+}

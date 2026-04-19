@@ -1,0 +1,60 @@
+{
+  "name": "photojournalism-raw-capture",
+  "description": "Secondary-domain vector from apl-kernel-stress-test.md §1.1 — a raw sensor capture observation. Demonstrates that the core frame kernel (observer + instrument + aspect + resolution + invariance + exclusions) works outside the AI-Eval domain.",
+  "source": "apl-kernel-stress-test.md §1.1",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "asset:photo-2026-04-18-001"
+      },
+      "aspect_refs": ["scene-light-capture"],
+      "statement": {
+        "predicate": "captured-as",
+        "content": {
+          "format": "raw",
+          "capture_time": "2026-04-18T10:15:30Z"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "reuters-camera-17",
+        "organization": "reuters"
+      },
+      "instrument": {
+        "sensor": "sony-a1",
+        "lens": "24-70mm-f2.8"
+      },
+      "aspect": ["scene-light-capture"],
+      "resolution": {
+        "format": "bayer-raw",
+        "bit_depth": 14
+      },
+      "invariance": [
+        "lossless-file-relocation",
+        "container-preserving-copy"
+      ],
+      "exclusions": [
+        "no-claim-about-denoised-output",
+        "no-claim-about-color-graded-derivatives"
+      ]
+    }
+  ],
+  "bridges": [],
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-valid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": [],
+    "diagnostics_contains": ["carrier-valid", "apl-present", "apl-valid"],
+    "diagnostics_absent": []
+  }
+}

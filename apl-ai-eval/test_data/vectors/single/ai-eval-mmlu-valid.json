@@ -1,0 +1,70 @@
+{
+  "name": "ai-eval-mmlu-valid",
+  "description": "Profile-conformant AI-Eval observation using the mmlu-default-dev-accuracy-v1 reference frame from apl-ai-eval-profile.md §10.1. The claim fully satisfies both core and AI-Eval profile invariants.",
+  "source": "apl-ai-eval-profile.md §10.1",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "type": "model-build",
+        "id": "model:acme-gpt-7b-build-42",
+        "build_id": "42",
+        "artifact_digest": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+        "provider": "acme",
+        "model_family": "acme-gpt-7b"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "predicate": "score",
+        "content": {
+          "benchmark_id": "mmlu",
+          "metric_id": "accuracy",
+          "value": 0.781,
+          "unit": "fraction",
+          "sample_count": 14042
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "acme-eval-lab"
+      },
+      "procedure": {
+        "runner_id": "lm-eval-harness@0.4.2",
+        "grader_id": "exact-match-v1",
+        "prompt_protocol": "zero-shot-mcq-v1"
+      },
+      "aspect": ["accuracy"],
+      "scope": {
+        "benchmark_id": "mmlu",
+        "benchmark_variant": "default",
+        "dataset_split": "dev",
+        "subset": "all"
+      },
+      "invariance": [
+        "score-object-serialization"
+      ],
+      "exclusions": [
+        "no-production-readiness-claim",
+        "no-deployment-safety-claim",
+        "no-out-of-scope-generalization-claim"
+      ]
+    }
+  ],
+  "bridges": [],
+  "profile": "ai-eval",
+  "expected": {
+    "core_outcome": "apl-valid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": [],
+    "diagnostics_contains": ["carrier-valid", "apl-present", "apl-valid"],
+    "diagnostics_absent": ["apl-ai-eval-predicate-disallowed", "apl-ai-eval-benchmark-id-mismatch"]
+  }
+}

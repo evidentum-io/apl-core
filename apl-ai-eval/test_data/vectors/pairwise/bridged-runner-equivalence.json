@@ -1,0 +1,149 @@
+{
+  "name": "bridged-runner-equivalence",
+  "description": "Two AI-Eval receipts with different runner_ids but the same grader_id, benchmark, and scope. A runner-equivalence bridge licenses the comparison. Expected: bridged-comparable.",
+  "source": "apl-ai-eval-profile.md §7.4 — runner-equivalence bridge",
+  "left": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "type": "model-build",
+          "id": "model:acme-gpt-7b-build-42",
+          "build_id": "42",
+          "artifact_digest": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+          "provider": "acme",
+          "model_family": "acme-gpt-7b"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark_id": "mmlu",
+            "metric_id": "accuracy",
+            "value": 0.781,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "right": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "type": "model-build",
+          "id": "model:acme-gpt-7b-build-44",
+          "build_id": "44",
+          "artifact_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "provider": "acme",
+          "model_family": "acme-gpt-7b"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark_id": "mmlu",
+            "metric_id": "accuracy",
+            "value": 0.790,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:1>"
+      }
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "acme-eval-lab"
+      },
+      "procedure": {
+        "runner_id": "lm-eval-harness@0.4.2",
+        "grader_id": "exact-match-v1",
+        "prompt_protocol": "zero-shot-mcq-v1"
+      },
+      "aspect": ["accuracy"],
+      "scope": {
+        "benchmark_id": "mmlu",
+        "benchmark_variant": "default",
+        "dataset_split": "dev",
+        "subset": "all"
+      },
+      "invariance": ["score-object-serialization"],
+      "exclusions": [
+        "no-production-readiness-claim",
+        "no-deployment-safety-claim",
+        "no-out-of-scope-generalization-claim"
+      ]
+    },
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "acme-eval-lab"
+      },
+      "procedure": {
+        "runner_id": "custom-runner@2.1",
+        "grader_id": "exact-match-v1",
+        "prompt_protocol": "zero-shot-mcq-v1"
+      },
+      "aspect": ["accuracy"],
+      "scope": {
+        "benchmark_id": "mmlu",
+        "benchmark_variant": "default",
+        "dataset_split": "dev",
+        "subset": "all"
+      },
+      "invariance": ["score-object-serialization"],
+      "exclusions": [
+        "no-production-readiness-claim",
+        "no-deployment-safety-claim",
+        "no-out-of-scope-generalization-claim"
+      ]
+    }
+  ],
+  "bridges": [],
+  "supplied_bridges": [
+    {
+      "version": "0.1",
+      "bridge_kind": "runner-equivalence",
+      "source_frame": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "target_frame": {
+        "hash": "<FRAME_HASH:1>"
+      },
+      "comparison_scope": {
+        "source_aspects": ["accuracy"],
+        "target_aspects": ["accuracy"],
+        "relation_type": "score-delta"
+      },
+      "assumptions": [
+        "lm-eval-harness@0.4.2 and custom-runner@2.1 produce equivalent scores for exact-match grading on this benchmark"
+      ],
+      "losses": []
+    }
+  ],
+  "query": {
+    "left_aspects": ["accuracy"],
+    "right_aspects": ["accuracy"],
+    "predicate": "score",
+    "relation_type": "score-delta"
+  },
+  "profile": "ai-eval",
+  "expected": {
+    "left_core": "apl-valid",
+    "right_core": "apl-valid",
+    "relation_outcome": "bridged-comparable",
+    "diagnostics_contains": ["apl-cross-frame", "apl-bridge-applicable"],
+    "diagnostics_absent": []
+  }
+}

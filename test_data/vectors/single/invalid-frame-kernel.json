@@ -1,0 +1,45 @@
+{
+  "name": "invalid-frame-kernel",
+  "description": "Receipt where the resolved frame lacks both procedure and instrument — violates the mandatory frame kernel check at apl-spec.md §10.4. Core verifier must return apl-invalid + frame-failure.",
+  "source": "fabricated — frame without procedure or instrument",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "model:acme-gpt-7b-build-42"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "predicate": "score",
+        "content": {
+          "benchmark": "MMLU",
+          "value": 0.781,
+          "unit": "fraction"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "aspect": ["accuracy"],
+      "scope": "mmlu/dev",
+      "invariance": ["JSON serialization of score object"],
+      "exclusions": ["no claim about deployment safety"]
+    }
+  ],
+  "bridges": [],
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-invalid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": ["frame-failure"],
+    "diagnostics_contains": ["carrier-valid", "apl-present"],
+    "diagnostics_absent": ["apl-valid"]
+  }
+}

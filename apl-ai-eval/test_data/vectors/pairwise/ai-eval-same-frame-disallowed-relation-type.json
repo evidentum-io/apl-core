@@ -1,0 +1,105 @@
+{
+  "name": "ai-eval-same-frame-disallowed-relation-type",
+  "description": "Two AI-Eval receipts sharing one frame. The query.relation_type is 'score-ratio' which is not in the AI-Eval allowed set {score-delta, repeatability-check}. The profile gate must fire before the same-frame branch, producing incomparable with apl-ai-eval-relation-type-invalid. The apl-same-frame-aspect-match diagnostic MUST NOT appear.",
+  "source": "fabricated — two AI-Eval receipts sharing one frame; query.relation_type = 'score-ratio' under AI-Eval profile",
+  "left": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "type": "model-build",
+          "id": "model:acme-gpt-7b-build-42",
+          "build_id": "42",
+          "artifact_digest": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+          "provider": "acme",
+          "model_family": "acme-gpt-7b"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark_id": "mmlu",
+            "metric_id": "accuracy",
+            "value": 0.781,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "right": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "type": "model-build",
+          "id": "model:acme-gpt-7b-build-44",
+          "build_id": "44",
+          "artifact_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "provider": "acme",
+          "model_family": "acme-gpt-7b"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark_id": "mmlu",
+            "metric_id": "accuracy",
+            "value": 0.790,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "acme-eval-lab"
+      },
+      "procedure": {
+        "runner_id": "lm-eval-harness@0.4.2",
+        "grader_id": "exact-match-v1",
+        "prompt_protocol": "zero-shot-mcq-v1"
+      },
+      "aspect": ["accuracy"],
+      "scope": {
+        "benchmark_id": "mmlu",
+        "benchmark_variant": "default",
+        "dataset_split": "dev",
+        "subset": "all"
+      },
+      "invariance": ["score-object-serialization"],
+      "exclusions": [
+        "no-production-readiness-claim",
+        "no-deployment-safety-claim",
+        "no-out-of-scope-generalization-claim"
+      ]
+    }
+  ],
+  "bridges": [],
+  "supplied_bridges": [],
+  "query": {
+    "left_aspects": ["accuracy"],
+    "right_aspects": ["accuracy"],
+    "predicate": "score",
+    "relation_type": "score-ratio"
+  },
+  "profile": "ai-eval",
+  "expected": {
+    "left_core": "apl-valid",
+    "right_core": "apl-valid",
+    "relation_outcome": "incomparable",
+    "diagnostics_contains": ["apl-ai-eval-relation-type-invalid"],
+    "diagnostics_absent": ["apl-same-frame-aspect-match"]
+  }
+}

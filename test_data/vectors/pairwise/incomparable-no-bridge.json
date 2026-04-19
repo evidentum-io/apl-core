@@ -1,0 +1,93 @@
+{
+  "name": "incomparable-no-bridge",
+  "description": "The Two MMLU Scores — canonical adversarial demo from apl-adversarial-demo.md. Observation A used lm-eval-harness@0.4.2 + exact-match-v1 on mmlu/dev; Observation B used custom-runner@2.1 + llm-judge-v3 on mmlu/test-lite. Both are core-valid individually. Without a bridge they are incomparable.",
+  "source": "apl-adversarial-demo.md",
+  "left": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "id": "model:acme-gpt-7b-build-42"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark": "MMLU",
+            "value": 0.781,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "right": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "id": "model:acme-gpt-7b-build-44"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark": "MMLU",
+            "value": 0.790,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:1>"
+      }
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "procedure": "benchmark-run/lm-eval-harness@0.4.2",
+      "aspect": ["accuracy"],
+      "scope": "mmlu/dev",
+      "invariance": ["score object serialization"],
+      "exclusions": [
+        "no claim about production readiness",
+        "no claim about deployment safety"
+      ]
+    },
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "procedure": "benchmark-run/custom-runner@2.1+llm-judge-v3",
+      "aspect": ["accuracy"],
+      "scope": "mmlu/test-lite",
+      "invariance": ["score object serialization"],
+      "exclusions": [
+        "no claim about production readiness",
+        "no claim about deployment safety"
+      ]
+    }
+  ],
+  "bridges": [],
+  "supplied_bridges": [],
+  "query": {
+    "left_aspects": ["accuracy"],
+    "right_aspects": ["accuracy"],
+    "predicate": "score",
+    "relation_type": "score-delta"
+  },
+  "profile": null,
+  "expected": {
+    "left_core": "apl-valid",
+    "right_core": "apl-valid",
+    "relation_outcome": "incomparable",
+    "diagnostics_contains": ["apl-cross-frame", "apl-bridge-not-found"],
+    "diagnostics_absent": []
+  }
+}
