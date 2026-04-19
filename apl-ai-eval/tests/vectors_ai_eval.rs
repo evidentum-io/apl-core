@@ -168,16 +168,24 @@ impl CarrierVerifier for DispatchMockCarrier {
 // Hash-placeholder substitution
 // ---------------------------------------------------------------------------
 
-fn substitute_hash_placeholders(v: &mut Value, frames: &[Value]) {
+/// Replace hash placeholders in `v` recursively.
+///
+/// Supported placeholder forms:
+///
+/// - `"<FRAME_HASH:N>"` — replaced with `canonical_hash(frames[N])`.
+/// - `"<BRIDGE_HASH:N>"` — replaced with `canonical_hash(supplied_bridges[N])`.
+///   FRAME_HASH placeholders in supplied_bridges must be resolved first before
+///   computing BRIDGE_HASH values.
+fn substitute_hash_placeholders(v: &mut Value, frames: &[Value], supplied_bridges: &[Value]) {
     match v {
         Value::Object(map) => {
             for (_, val) in map.iter_mut() {
-                substitute_hash_placeholders(val, frames);
+                substitute_hash_placeholders(val, frames, supplied_bridges);
             }
         }
         Value::Array(arr) => {
             for item in arr.iter_mut() {
-                substitute_hash_placeholders(item, frames);
+                substitute_hash_placeholders(item, frames, supplied_bridges);
             }
         }
         Value::String(s) => {
@@ -195,6 +203,20 @@ fn substitute_hash_placeholders(v: &mut Value, frames: &[Value]) {
                     )
                 });
                 *s = canonical_hash(frame).to_string();
+            } else if let Some(idx_str) = s
+                .strip_prefix("<BRIDGE_HASH:")
+                .and_then(|tail| tail.strip_suffix('>'))
+            {
+                let idx: usize = idx_str
+                    .parse()
+                    .unwrap_or_else(|_| panic!("invalid BRIDGE_HASH index: {s}"));
+                let bridge = supplied_bridges.get(idx).unwrap_or_else(|| {
+                    panic!(
+                        "BRIDGE_HASH placeholder index {idx} out of range (supplied_bridges.len={})",
+                        supplied_bridges.len()
+                    )
+                });
+                *s = canonical_hash(bridge).to_string();
             }
         }
         _ => {}
@@ -221,7 +243,7 @@ fn run_single_vector(path: &Path) {
         ),
     }
 
-    substitute_hash_placeholders(&mut v.metadata_apl, &v.frames);
+    substitute_hash_placeholders(&mut v.metadata_apl, &v.frames, &[]);
 
     let mut frames = InMemoryFrameResolver::new();
     for f in &v.frames {
@@ -326,11 +348,13 @@ fn run_pairwise_vector(path: &Path) {
         ),
     }
 
-    substitute_hash_placeholders(&mut v.left.metadata_apl, &v.frames);
-    substitute_hash_placeholders(&mut v.right.metadata_apl, &v.frames);
+    // Substitute FRAME_HASH in supplied_bridges first so that BRIDGE_HASH
+    // placeholders in claim metadata can reference resolved bridge hashes.
     for b in v.supplied_bridges.iter_mut() {
-        substitute_hash_placeholders(b, &v.frames);
+        substitute_hash_placeholders(b, &v.frames, &[]);
     }
+    substitute_hash_placeholders(&mut v.left.metadata_apl, &v.frames, &v.supplied_bridges);
+    substitute_hash_placeholders(&mut v.right.metadata_apl, &v.frames, &v.supplied_bridges);
 
     let mut frames = InMemoryFrameResolver::new();
     for f in &v.frames {
@@ -339,7 +363,7 @@ fn run_pairwise_vector(path: &Path) {
     let mut bridges_resolver = InMemoryBridgeResolver::new();
     for b in &v.bridges {
         let mut bv = b.clone();
-        substitute_hash_placeholders(&mut bv, &v.frames);
+        substitute_hash_placeholders(&mut bv, &v.frames, &[]);
         bridges_resolver.insert(bv);
     }
 

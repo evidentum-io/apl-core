@@ -22,7 +22,10 @@
       },
       "frame_ref": {
         "hash": "<FRAME_HASH:0>"
-      }
+      },
+      "bridge_refs": [
+        { "hash": "<BRIDGE_HASH:0>" }
+      ]
     }
   },
   "right": {

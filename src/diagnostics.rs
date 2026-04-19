@@ -118,6 +118,7 @@ impl DiagnosticCode {
                 | "apl-bridge-frame-mismatch"
                 | "apl-bridge-scope-mismatch"
                 | "apl-bridge-applicable"
+                | "apl-bridge-hash-mismatch"
                 | "apl-transformation-declared"
         )
     }
@@ -262,6 +263,7 @@ fn ensure_core_registered() {
             APL_BRIDGE_FRAME_MISMATCH.as_str(),
             APL_BRIDGE_SCOPE_MISMATCH.as_str(),
             APL_BRIDGE_APPLICABLE.as_str(),
+            APL_BRIDGE_HASH_MISMATCH.as_str(),
             APL_TRANSFORMATION_DECLARED.as_str(),
         ]);
     });
@@ -506,6 +508,13 @@ pub const APL_BRIDGE_SCOPE_MISMATCH: DiagnosticCode =
     DiagnosticCode::new("apl-bridge-scope-mismatch");
 /// Bridge artifact is applicable to the query.
 pub const APL_BRIDGE_APPLICABLE: DiagnosticCode = DiagnosticCode::new("apl-bridge-applicable");
+/// Resolved bridge canonical hash does not match the requested `bridge_ref.hash`.
+///
+/// Emitted when a resolver returns a bridge value whose `canonical_hash` does not equal
+/// the hash that was requested. This guards the content-addressed trust boundary: a
+/// resolver must not substitute a different bridge for the one pinned by the claim.
+pub const APL_BRIDGE_HASH_MISMATCH: DiagnosticCode =
+    DiagnosticCode::new("apl-bridge-hash-mismatch");
 /// Transformation is declared in the bridge artifact for this pair.
 pub const APL_TRANSFORMATION_DECLARED: DiagnosticCode =
     DiagnosticCode::new("apl-transformation-declared");
