@@ -6,7 +6,7 @@
 //! AI-Eval, Photojournalism) to enforce profile-specific invariants without
 //! modifying the core algorithm.
 //!
-//! # Hook Invocation Order
+//! # Hook Invocation Order (single-receipt)
 //!
 //! 1. [`Profile::check_claim`] — claim-only invariants (e.g. allowed predicates).
 //! 2. [`Profile::check_frame`] — frame-only invariants.
@@ -14,9 +14,19 @@
 //!
 //! Each hook short-circuits on `Err`: if `check_claim` fails, `check_frame`
 //! and `cross_check` are NOT invoked.
+//!
+//! # Hook Invocation Order (pairwise, RELATION-1)
+//!
+//! 4. [`Profile::check_pairwise_relation`] — invoked AFTER Core preconditions
+//!    and statement structural compatibility pass, BEFORE the frame-equality
+//!    branch is selected. Applies to both same-frame and cross-frame paths.
+//! 5. [`Profile::check_bridge_applicability`] — invoked PER bridge candidate on
+//!    the cross-frame path, AFTER Core frame-match and scope-match pass.
 
+use crate::core::bridge::Bridge;
 use crate::core::claim::Claim;
 use crate::core::frame::Frame;
+use crate::core::relation::RelationQuery;
 use crate::diagnostics::Diagnostic;
 use crate::failure::FailureClass;
 
@@ -94,6 +104,66 @@ pub trait Profile: Send + Sync {
     ///
     /// Returns `Err(ProfileFailure)` if the pair violates a joint constraint.
     fn cross_check(&self, _claim: &Claim, _frame: &Frame) -> ProfileCheckResult {
+        Ok(())
+    }
+
+    /// Check pairwise relation invariants (RELATION-1, step 10a).
+    ///
+    /// Invoked AFTER Core preconditions and statement structural compatibility
+    /// pass, BEFORE the frame-equality branch is selected. Applies to both
+    /// same-frame and cross-frame paths.
+    ///
+    /// Profiles use this hook to enforce query-level restrictions (e.g. allowed
+    /// predicate or `relation_type` values) that must apply to ALL pairs,
+    /// including same-frame ones.
+    ///
+    /// # Arguments
+    ///
+    /// * `left_claim` — parsed claim for the left receipt.
+    /// * `right_claim` — parsed claim for the right receipt.
+    /// * `left_frame` — resolved frame for the left receipt.
+    /// * `right_frame` — resolved frame for the right receipt.
+    /// * `query` — the pairwise relation query.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with profile-specific diagnostics if the pair violates a
+    /// profile constraint. The diagnostics are appended to `PairwiseOutput`.
+    fn check_pairwise_relation(
+        &self,
+        _left_claim: &Claim,
+        _right_claim: &Claim,
+        _left_frame: &Frame,
+        _right_frame: &Frame,
+        _query: &RelationQuery,
+    ) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    /// Check bridge-level applicability invariants (RELATION-1, step 16 profile hook).
+    ///
+    /// Invoked PER bridge candidate on the cross-frame path, AFTER Core
+    /// frame-match and scope-match pass. Profiles use this hook to enforce
+    /// bridge-kind-specific constraints (e.g. AI-Eval `bridge_kind` field check).
+    ///
+    /// # Arguments
+    ///
+    /// * `bridge` — the candidate bridge that passed Core applicability.
+    /// * `left_frame` — resolved frame for the left receipt.
+    /// * `right_frame` — resolved frame for the right receipt.
+    /// * `query` — the pairwise relation query.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with profile-specific diagnostics if the bridge is not
+    /// applicable under the profile constraints. The candidate is skipped.
+    fn check_bridge_applicability(
+        &self,
+        _bridge: &Bridge,
+        _left_frame: &Frame,
+        _right_frame: &Frame,
+        _query: &RelationQuery,
+    ) -> Result<(), Vec<Diagnostic>> {
         Ok(())
     }
 }
@@ -263,5 +333,59 @@ mod tests {
         let p = RejectOnCross;
         let claim = make_claim();
         assert_eq!(p.check_claim(&claim), Ok(()));
+    }
+
+    #[test]
+    fn default_check_pairwise_relation_returns_ok() {
+        // AcceptAll does not override check_pairwise_relation; the default
+        // no-op body (lines 132-141) must return Ok(()).
+        let p = AcceptAll;
+        let claim = make_claim();
+        let frame = make_frame();
+        let query = crate::core::relation::RelationQuery::parse(&json!({
+            "left_aspects":  ["accuracy"],
+            "right_aspects": ["accuracy"],
+            "predicate":     "score",
+            "relation_type": "score-delta"
+        }))
+        .expect("valid query fixture");
+
+        let result = p.check_pairwise_relation(&claim, &claim, &frame, &frame, &query);
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn default_check_bridge_applicability_returns_ok() {
+        // AcceptAll does not override check_bridge_applicability; the default
+        // no-op body (lines 160-168) must return Ok(()).
+        let p = AcceptAll;
+        let frame = make_frame();
+        let query = crate::core::relation::RelationQuery::parse(&json!({
+            "left_aspects":  ["accuracy"],
+            "right_aspects": ["accuracy"],
+            "predicate":     "score",
+            "relation_type": "score-delta"
+        }))
+        .expect("valid query fixture");
+
+        let h_src = format!("sha256:{}", "a".repeat(64));
+        let h_tgt = format!("sha256:{}", "b".repeat(64));
+        let bridge_value = json!({
+            "version": "0.1",
+            "source_frame": { "hash": h_src },
+            "target_frame": { "hash": h_tgt },
+            "comparison_scope": {
+                "source_aspects": ["accuracy"],
+                "target_aspects": ["accuracy"],
+                "relation_type": "score-delta"
+            },
+            "assumptions": [],
+            "losses": []
+        });
+        let bridge =
+            crate::core::bridge::Bridge::parse(&bridge_value).expect("valid bridge fixture");
+
+        let result = p.check_bridge_applicability(&bridge, &frame, &frame, &query);
+        assert_eq!(result, Ok(()));
     }
 }
