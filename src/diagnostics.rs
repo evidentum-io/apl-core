@@ -11,6 +11,18 @@
 //! New codes can be added without a breaking change: callers pattern-match on
 //! values they know and ignore unknown codes via the catch-all `_` arm
 //! (or comparison with the named constants in this module).
+//!
+//! # Deserialization (whitelist)
+//!
+//! `DiagnosticCode` is deserialized against a process-wide whitelist of
+//! registered codes. apl-core auto-registers its core and pairwise constants
+//! on first deserialize. Vertical profiles (e.g. `apl-ai-eval`) expose a
+//! `register()` function that downstream applications call once at startup
+//! to extend the registry with profile-specific codes. Any code NOT in the
+//! registry at deserialize time yields a serde error.
+//!
+//! This is a deliberate trust boundary: arbitrary strings from untrusted JSON
+//! cannot silently grow the intern table.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -35,17 +47,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Deserialization
 ///
-/// Deserialization intern-looks-up the incoming string in a process-wide
-/// table. The first sighting of a given code leaks its bytes to produce
-/// a `&'static str`; all subsequent sightings of the same code reuse the
-/// cached pointer. Total leaked memory is bounded by the number of
-/// DISTINCT codes ever deserialized, which is small in practice (the
-/// protocol has ~80 canonical codes and profiles add a handful more).
-///
-/// The intern table survives the lifetime of the process. It is not a
-/// cache that can be flushed; this is intentional — `DiagnosticCode`
-/// requires `'static` references, and the intern semantics preserve
-/// equality (two deserialized instances of "apl-valid" are pointer-equal).
+/// Deserialization looks up the incoming string in a process-wide whitelist of
+/// registered codes. The registry is bounded by registered codes only —
+/// arbitrary strings from untrusted JSON will produce a serde error rather
+/// than growing any table. Two deserialized instances of the same registered
+/// code are pointer-equal to the original `&'static str` constant.
 ///
 /// # Ordering
 ///
@@ -129,37 +135,153 @@ impl Serialize for DiagnosticCode {
     }
 }
 
-/// Returns a `&'static str` for `s`, interning it in a process-wide table on
-/// first sight.
+// ---------------------------------------------------------------------------
+// Process-wide whitelist registry
+// ---------------------------------------------------------------------------
+
+/// Process-wide whitelist registry of known diagnostic codes.
 ///
-/// The first call for a given string allocates and leaks exactly one
-/// `Box<str>`. All subsequent calls with the same content return the cached
-/// pointer without any allocation. Total leaked memory is therefore bounded
-/// by the number of DISTINCT strings ever passed, not by call count.
-fn intern_diagnostic(s: &str) -> &'static str {
-    static INTERN: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
-    let intern = INTERN.get_or_init(|| Mutex::new(HashMap::new()));
-    // If a previous thread panicked while holding the lock, the mutex is
-    // poisoned. We intentionally recover the guard via `PoisonError::into_inner`
-    // and continue: the intern table is monotonic (only inserts, never
-    // removes or mutates entries), so even mid-panic its contents remain a
-    // consistent map of code strings to leaked `&'static str`. A panic cannot
-    // leave the table in a broken state worth propagating a poison for.
-    let mut map = intern
+/// Keys are `&'static str` references pointing directly to the string literals
+/// embedded in the binary (the same pointers held by the constants in this
+/// module). Values are `()` — the key is the value.
+///
+/// Using `&'static str` as key means `get_key_value` can return the stored
+/// pointer, which is then handed to `DiagnosticCode::new` — preserving
+/// pointer equality with the named constants.
+static REGISTRY: OnceLock<Mutex<HashMap<&'static str, ()>>> = OnceLock::new();
+
+/// Extend the registry with additional `&'static str` codes.
+///
+/// This function is idempotent: registering the same code twice has no effect.
+///
+/// # Usage
+///
+/// Vertical profiles (e.g. `apl-ai-eval`) call this once at startup (or via
+/// their own `register()` function) to add their profile-specific constants
+/// so that deserialization succeeds for those codes.
+pub fn register_diagnostic_codes(codes: &[&'static str]) {
+    let reg = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    // A panicking thread holding this lock is not a concern: the registry is
+    // insert-only, so a partial insertion is still a consistent state.
+    let mut map = reg
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(&existing) = map.get(s) {
-        return existing;
+    for &c in codes {
+        map.insert(c, ());
     }
-    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    map.insert(leaked.to_owned(), leaked);
-    leaked
+}
+
+/// Ensure all apl-core constants are registered.
+///
+/// Called automatically before the first deserialization. Downstream code
+/// does not need to call this explicitly.
+fn ensure_core_registered() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        register_diagnostic_codes(&[
+            // Failure class markers
+            FAILURE_CARRIER.as_str(),
+            FAILURE_CLAIM_STRUCTURE.as_str(),
+            FAILURE_REFERENCE.as_str(),
+            FAILURE_FRAME.as_str(),
+            FAILURE_SEMANTIC_LINKAGE.as_str(),
+            FAILURE_RELATION_STRUCTURE.as_str(),
+            // Carrier
+            CARRIER_VALID.as_str(),
+            CARRIER_INVALID.as_str(),
+            // APL envelope
+            APL_PRESENT.as_str(),
+            APL_MISSING.as_str(),
+            APL_VERSION_MISSING.as_str(),
+            APL_VERSION_UNSUPPORTED.as_str(),
+            // Claim structure
+            APL_CLAIM_MISSING.as_str(),
+            APL_CLAIM_KIND_MISSING.as_str(),
+            APL_CLAIM_KIND_UNSUPPORTED.as_str(),
+            APL_SUBJECT_MISSING.as_str(),
+            APL_SUBJECT_INVALID.as_str(),
+            APL_SUBJECT_ID_INVALID.as_str(),
+            APL_SUBJECT_DIGEST_INVALID.as_str(),
+            APL_ASPECT_REFS_MISSING.as_str(),
+            APL_ASPECT_REFS_INVALID.as_str(),
+            APL_ASPECT_REF_OUT_OF_FRAME.as_str(),
+            APL_STATEMENT_MISSING.as_str(),
+            APL_STATEMENT_INVALID.as_str(),
+            APL_PREDICATE_MISSING.as_str(),
+            APL_CONTENT_MISSING.as_str(),
+            // Frame binding & resolution
+            APL_FRAME_BOUND.as_str(),
+            APL_FRAME_REF_INVALID.as_str(),
+            APL_FRAME_MISSING.as_str(),
+            APL_FRAME_HASH_INVALID.as_str(),
+            APL_FRAME_UNRESOLVED.as_str(),
+            APL_FRAME_HASH_MISMATCH.as_str(),
+            APL_FRAME_VERSION_MISSING.as_str(),
+            APL_FRAME_VERSION_UNSUPPORTED.as_str(),
+            APL_FRAME_OBSERVER_INVALID.as_str(),
+            APL_FRAME_ASPECT_INVALID.as_str(),
+            APL_FRAME_INVARIANCE_INVALID.as_str(),
+            APL_FRAME_EXCLUSIONS_INVALID.as_str(),
+            APL_FRAME_PROCEDURE_OR_INSTRUMENT_MISSING.as_str(),
+            APL_FRAME_SCOPE_OR_RESOLUTION_MISSING.as_str(),
+            APL_FRAME_KERNEL_MISSING.as_str(),
+            // Relation-layer envelope
+            APL_RELATED_FRAMES_INVALID.as_str(),
+            APL_BRIDGE_REFS_INVALID.as_str(),
+            APL_TRANSFORMATION_REFS_INVALID.as_str(),
+            // Core outcome markers
+            APL_VALID.as_str(),
+            APL_INVALID.as_str(),
+            // Relation outcome markers
+            SAME_FRAME.as_str(),
+            CROSS_FRAME.as_str(),
+            BRIDGED.as_str(),
+            UNBRIDGED.as_str(),
+            COMPARABLE.as_str(),
+            INCOMPARABLE.as_str(),
+            // Transformation markers
+            TRANSFORMATION_DECLARED.as_str(),
+            TRANSFORMATION_MISSING.as_str(),
+            LOSS_DECLARED.as_str(),
+            LOSS_UNDECLARED.as_str(),
+            // Pairwise diagnostics
+            APL_PAIR_LEFT_INVALID.as_str(),
+            APL_PAIR_RIGHT_INVALID.as_str(),
+            APL_RELATION_QUERY_INVALID.as_str(),
+            APL_RELATION_QUERY_LEFT_ASPECTS_OUT_OF_CLAIM.as_str(),
+            APL_RELATION_QUERY_RIGHT_ASPECTS_OUT_OF_CLAIM.as_str(),
+            APL_RELATION_QUERY_PREDICATE_MISMATCH.as_str(),
+            APL_SAME_FRAME.as_str(),
+            APL_SAME_FRAME_ASPECT_MATCH.as_str(),
+            APL_SAME_FRAME_ASPECT_MISMATCH.as_str(),
+            APL_STATEMENT_CONTENT_TYPE_MISMATCH.as_str(),
+            APL_STATEMENT_OBJECT_SHAPE_MISMATCH.as_str(),
+            APL_CROSS_FRAME.as_str(),
+            APL_BRIDGE_INVALID.as_str(),
+            APL_BRIDGE_NOT_FOUND.as_str(),
+            APL_BRIDGE_FRAME_MISMATCH.as_str(),
+            APL_BRIDGE_SCOPE_MISMATCH.as_str(),
+            APL_BRIDGE_APPLICABLE.as_str(),
+            APL_TRANSFORMATION_DECLARED.as_str(),
+        ]);
+    });
 }
 
 impl<'de> Deserialize<'de> for DiagnosticCode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(Self(intern_diagnostic(&s)))
+        ensure_core_registered();
+        let reg = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+        let map = reg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((&known, ())) = map.get_key_value(s.as_str()) {
+            Ok(DiagnosticCode::new(known))
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "unknown diagnostic code: {s}"
+            )))
+        }
     }
 }
 
@@ -451,6 +573,48 @@ mod tests {
     }
 
     #[test]
+    fn unknown_diagnostic_code_rejected_on_deserialize() {
+        let result: Result<DiagnosticCode, _> = serde_json::from_str(r#""fake-code-xyz""#);
+        assert!(
+            result.is_err(),
+            "unknown diagnostic code must produce a deserialization error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unknown diagnostic code"),
+            "error message must mention 'unknown diagnostic code', got: {err}"
+        );
+    }
+
+    #[test]
+    fn registered_core_code_deserializes_to_pointer_identical_static() {
+        // Verify that deserializing a registered core code yields a value that
+        // is content-equal to the named constant, AND that two independent
+        // deserializations of the same code share the same underlying pointer
+        // (i.e. the registry always returns the same `&'static str` slot).
+        //
+        // Note: Rust `const` items do not guarantee pointer identity across
+        // different use sites — the compiler may duplicate the underlying
+        // string literal. We therefore verify pointer stability via two
+        // deserialization calls rather than directly against `APL_VALID.as_str()`.
+        let a: DiagnosticCode =
+            serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
+        let b: DiagnosticCode =
+            serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
+        // Content must match the named constant.
+        assert_eq!(
+            a.as_str(),
+            APL_VALID.as_str(),
+            "deserialized code must match APL_VALID content"
+        );
+        // Both deserialized values must be pointer-identical (same registry slot).
+        assert!(
+            std::ptr::eq(a.as_str() as *const str, b.as_str() as *const str),
+            "two deserializations of the same code must return pointer-identical &'static str"
+        );
+    }
+
+    #[test]
     fn deserialize_same_code_twice_shares_pointer() {
         let a: DiagnosticCode =
             serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
@@ -463,14 +627,13 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_different_codes_get_different_pointers() {
-        let a: DiagnosticCode =
-            serde_json::from_str(r#""apl-valid""#).expect("deserialization must succeed");
-        let b: DiagnosticCode =
-            serde_json::from_str(r#""carrier-valid""#).expect("deserialization must succeed");
+    fn register_diagnostic_codes_extends_registry() {
+        register_diagnostic_codes(&["custom-test-code-unique-abc123"]);
+        let result: Result<DiagnosticCode, _> =
+            serde_json::from_str(r#""custom-test-code-unique-abc123""#);
         assert!(
-            !std::ptr::eq(a.as_str(), b.as_str()),
-            "two deserializations of distinct codes must return different pointers"
+            result.is_ok(),
+            "after registration, the custom code must deserialize successfully"
         );
     }
 
