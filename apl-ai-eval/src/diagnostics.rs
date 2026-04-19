@@ -47,6 +47,12 @@ pub const APL_AI_EVAL_PREDICATE_INVALID: DiagnosticCode =
 /// AI-Eval pairwise: query `relation_type` is not in the allowed set.
 pub const APL_AI_EVAL_RELATION_TYPE_INVALID: DiagnosticCode =
     DiagnosticCode::new("apl-ai-eval-relation-type-invalid");
+/// AI-Eval pairwise gate: `query.left_aspects` does not contain exactly one element.
+pub const APL_AI_EVAL_QUERY_LEFT_ASPECTS_CARDINALITY_INVALID: DiagnosticCode =
+    DiagnosticCode::new("apl-ai-eval-query-left-aspects-cardinality-invalid");
+/// AI-Eval pairwise gate: `query.right_aspects` does not contain exactly one element.
+pub const APL_AI_EVAL_QUERY_RIGHT_ASPECTS_CARDINALITY_INVALID: DiagnosticCode =
+    DiagnosticCode::new("apl-ai-eval-query-right-aspects-cardinality-invalid");
 /// AI-Eval claim: `statement.content.benchmark_id` differs from `frame.scope.benchmark_id`.
 pub const APL_AI_EVAL_BENCHMARK_ID_MISMATCH: DiagnosticCode =
     DiagnosticCode::new("apl-ai-eval-benchmark-id-mismatch");

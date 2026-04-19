@@ -17,9 +17,9 @@ use apl_core::profile::trait_def::{BridgeCheckResult, ProfileCheckResult, Profil
 use apl_core::FailureClass;
 
 use crate::diagnostics::{
-    APL_AI_EVAL_BENCHMARK_ID_MISMATCH, APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH,
-    APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH, APL_AI_EVAL_PREDICATE_DISALLOWED,
-    APL_AI_EVAL_PREDICATE_INVALID, APL_AI_EVAL_RELATION_TYPE_INVALID,
+    APL_AI_EVAL_BENCHMARK_ID_MISMATCH, APL_AI_EVAL_PREDICATE_DISALLOWED,
+    APL_AI_EVAL_PREDICATE_INVALID, APL_AI_EVAL_QUERY_LEFT_ASPECTS_CARDINALITY_INVALID,
+    APL_AI_EVAL_QUERY_RIGHT_ASPECTS_CARDINALITY_INVALID, APL_AI_EVAL_RELATION_TYPE_INVALID,
 };
 use crate::profile::{AI_EVAL_ALLOWED_ASPECTS, AI_EVAL_ALLOWED_UNITS};
 
@@ -158,14 +158,14 @@ pub fn check_pairwise_relation(
         _ => return Err(vec![APL_AI_EVAL_RELATION_TYPE_INVALID]),
     }
 
-    // §7.1 — left_aspects cardinality MUST be 1.
+    // §7.8.2 — left_aspects cardinality MUST be exactly 1.
     if query.left_aspects.len() != 1 {
-        return Err(vec![APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH]);
+        return Err(vec![APL_AI_EVAL_QUERY_LEFT_ASPECTS_CARDINALITY_INVALID]);
     }
 
-    // §7.1 — right_aspects cardinality MUST be 1.
+    // §7.8.2 — right_aspects cardinality MUST be exactly 1.
     if query.right_aspects.len() != 1 {
-        return Err(vec![APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH]);
+        return Err(vec![APL_AI_EVAL_QUERY_RIGHT_ASPECTS_CARDINALITY_INVALID]);
     }
 
     Ok(())
@@ -881,6 +881,9 @@ mod cross_check_tests {
 #[cfg(test)]
 mod pairwise_gate_tests {
     use super::*;
+    use crate::diagnostics::{
+        APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH, APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH,
+    };
     use crate::profile::AiEvalProfile;
     use apl_core::core::claim::Claim;
     use apl_core::core::frame::Frame;
@@ -1042,7 +1045,8 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH));
+        assert!(err.contains(&APL_AI_EVAL_QUERY_LEFT_ASPECTS_CARDINALITY_INVALID));
+        assert!(!err.contains(&APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH));
     }
 
     // AC18: right_aspects cardinality != 1.
@@ -1059,7 +1063,8 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH));
+        assert!(err.contains(&APL_AI_EVAL_QUERY_RIGHT_ASPECTS_CARDINALITY_INVALID));
+        assert!(!err.contains(&APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH));
     }
 }
 
