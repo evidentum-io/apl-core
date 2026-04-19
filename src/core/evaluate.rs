@@ -177,10 +177,28 @@ pub fn evaluate_relation(
     let mut diagnostics: Vec<DiagnosticCode> = Vec::new();
 
     // STEPS 1-2: core validation of both sides.
-    let (left_out, left_claim_opt, left_frame_opt) =
+    let (left_out, left_claim_opt, left_frame_opt, left_prevalidated_inconsistent) =
         resolve_side(input.left, carrier, frames, bridges, profile);
-    let (right_out, right_claim_opt, right_frame_opt) =
+    let (right_out, right_claim_opt, right_frame_opt, right_prevalidated_inconsistent) =
         resolve_side(input.right, carrier, frames, bridges, profile);
+
+    // Pre-check: if either Prevalidated triple failed internal consistency,
+    // return early before any further processing.
+    if left_prevalidated_inconsistent || right_prevalidated_inconsistent {
+        diagnostics.push(D::APL_PAIR_PREVALIDATED_INCONSISTENT);
+        return PairwiseOutput {
+            left: SideCore {
+                core_outcome: left_out.core_outcome,
+                failure_classes: left_out.failure_classes,
+            },
+            right: SideCore {
+                core_outcome: right_out.core_outcome,
+                failure_classes: right_out.failure_classes,
+            },
+            relation_outcome: RelationOutcome::RelationNotEvaluated,
+            diagnostics,
+        };
+    }
 
     let left_invalid = left_out.core_outcome == CoreOutcome::AplInvalid;
     let right_invalid = right_out.core_outcome == CoreOutcome::AplInvalid;
@@ -499,23 +517,55 @@ pub fn evaluate_relation(
 // ---------------------------------------------------------------------------
 
 /// Dispatch one side of the pair: either run CORE-VERIFY-1 on raw bytes,
-/// or unpack the prevalidated triple directly.
+/// or unpack and validate the prevalidated triple.
+///
+/// The returned `bool` is `true` when the `Prevalidated` variant was supplied
+/// but the triple failed one of the three runtime consistency checks:
+///
+/// 1. `frame.canonical_hash() == claim.frame_ref.hash`
+/// 2. `output.core_outcome == CoreOutcome::AplValid`
+/// 3. Every element of `claim.aspect_refs` is present in `frame.aspect`
+///
+/// When `true`, the caller MUST emit `APL_PAIR_PREVALIDATED_INCONSISTENT` and
+/// return `RelationNotEvaluated` immediately. The `VerifierOutput` in position 0
+/// still carries the `core_outcome` the caller supplied (even if it is the
+/// source of the inconsistency), so the per-side `SideCore` in the early-exit
+/// `PairwiseOutput` faithfully reflects what the caller claimed.
 fn resolve_side<'a>(
     input: ReceiptInput<'a>,
     carrier: &dyn CarrierVerifier,
     frames: &dyn FrameResolver,
     bridges: &dyn BridgeResolver,
     profile: Option<&dyn Profile>,
-) -> (VerifierOutput, Option<Claim>, Option<Frame>) {
+) -> (VerifierOutput, Option<Claim>, Option<Frame>, bool) {
     match input {
         ReceiptInput::Bytes(b) => {
-            verify_receipt_with_claim_and_frame(b, carrier, frames, bridges, profile)
+            let (out, claim, frame) =
+                verify_receipt_with_claim_and_frame(b, carrier, frames, bridges, profile);
+            (out, claim, frame, false)
         }
         ReceiptInput::Prevalidated {
             output,
             claim,
             frame,
-        } => (output, Some(claim), Some(frame)),
+        } => {
+            // Check 1: frame hash must match the hash pinned in the claim.
+            let hash_ok = frame.canonical_hash() == claim.frame_ref.hash;
+
+            // Check 2: a prevalidated receipt must carry AplValid.
+            let outcome_ok = output.core_outcome == CoreOutcome::AplValid;
+
+            // Check 3: every aspect_ref in the claim must appear in frame.aspect.
+            let frame_aspect_set: HashSet<&str> = frame.aspect.iter().map(String::as_str).collect();
+            let aspects_ok = claim
+                .claim
+                .aspect_refs
+                .iter()
+                .all(|a| frame_aspect_set.contains(a.as_str()));
+
+            let inconsistent = !(hash_ok && outcome_ok && aspects_ok);
+            (output, Some(claim), Some(frame), inconsistent)
+        }
     }
 }
 
@@ -562,7 +612,6 @@ mod tests {
 
     use super::*;
     use crate::core::carrier::{CarrierOutcome, CarrierVerifier};
-    use crate::core::jcs::canonical_hash;
     use crate::core::output::CoreOutcome;
     use crate::core::resolver::{InMemoryBridgeResolver, InMemoryFrameResolver};
 
@@ -704,17 +753,17 @@ mod tests {
         Claim::parse(&v).expect("valid claim fixture")
     }
 
-    fn make_frame(scope: &str) -> Frame {
-        let v = json!({
-            "version": "0.1",
-            "observer": "o",
-            "procedure": "p",
-            "aspect": ["accuracy"],
-            "scope": scope,
-            "invariance": ["i"],
-            "exclusions": ["e"]
-        });
-        Frame::parse(&v).expect("valid frame fixture")
+    /// Parse a `Frame` from the canonical frame fixture `a` (`frame_value_a()`).
+    ///
+    /// Using this together with `frame_value_a().canonical_hash()` guarantees
+    /// the prevalidated triple consistency check passes (hash matches).
+    fn fixture_frame_a() -> Frame {
+        Frame::parse(&frame_value_a()).expect("valid frame_a fixture")
+    }
+
+    /// Parse a `Frame` from the canonical frame fixture `b` (`frame_value_b()`).
+    fn fixture_frame_b() -> Frame {
+        Frame::parse(&frame_value_b()).expect("valid frame_b fixture")
     }
 
     // ---- AC1: either side apl-invalid → RelationNotEvaluated ----------------
@@ -724,15 +773,43 @@ mod tests {
         let mut frames = InMemoryFrameResolver::new();
         let fv = frame_value_a();
         let fh = frames.insert(fv.clone());
-
-        // Right is valid.
-        let right_meta = apl_metadata(&fh.to_string(), &["accuracy"], "score", json!(0.79));
-        let right_carrier = valid_carrier(right_meta);
         let bridges = InMemoryBridgeResolver::new();
 
+        // Right is valid; left side is raw bytes verified by an invalid carrier
+        // so CORE-VERIFY-1 returns AplInvalid.
+        let left_carrier = invalid_carrier();
+        let right_meta = apl_metadata(&fh.to_string(), &["accuracy"], "score", json!(0.79));
+        let right_carrier = valid_carrier(right_meta);
+        // Both sides share the same carrier slot in evaluate_relation, so we
+        // route the valid side through Prevalidated and invalid side through Bytes.
+        let input = PairwiseInput {
+            left: ReceiptInput::Bytes(&[]),
+            right: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: make_claim(&fh.to_string(), &["accuracy"], "score", json!(0.79)),
+                frame: Frame::parse(&fv).expect("frame"),
+            },
+            query: base_query(),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &left_carrier, &frames, &bridges, None);
+        assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
+        assert!(out.diagnostics.contains(&D::APL_PAIR_LEFT_INVALID));
+        drop(right_carrier); // suppress unused warning
+    }
+
+    #[test]
+    fn ac1_right_invalid_returns_not_evaluated() {
+        let mut frames = InMemoryFrameResolver::new();
+        let fv = frame_value_a();
+        let fh = frames.insert(fv.clone());
+        let bridges = InMemoryBridgeResolver::new();
+
+        // Right side is raw bytes verified by an invalid carrier → AplInvalid.
+        let right_carrier = invalid_carrier();
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated {
-                output: core_invalid_output(),
+                output: core_valid_output(),
                 claim: make_claim(&fh.to_string(), &["accuracy"], "score", json!(0.78)),
                 frame: Frame::parse(&fv).expect("frame"),
             },
@@ -741,31 +818,6 @@ mod tests {
             supplied_bridges: vec![],
         };
         let out = evaluate_relation(input, &right_carrier, &frames, &bridges, None);
-        assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
-        assert!(out.diagnostics.contains(&D::APL_PAIR_LEFT_INVALID));
-    }
-
-    #[test]
-    fn ac1_right_invalid_returns_not_evaluated() {
-        let frames = InMemoryFrameResolver::new();
-        let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
-        let input = PairwiseInput {
-            left: ReceiptInput::Prevalidated {
-                output: core_valid_output(),
-                claim: make_claim(&fh, &["accuracy"], "score", json!(0.78)),
-                frame: frame.clone(),
-            },
-            right: ReceiptInput::Prevalidated {
-                output: core_invalid_output(),
-                claim: make_claim(&fh, &["accuracy"], "score", json!(0.79)),
-                frame,
-            },
-            query: base_query(),
-            supplied_bridges: vec![],
-        };
-        let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
         assert!(out.diagnostics.contains(&D::APL_PAIR_RIGHT_INVALID));
     }
@@ -776,8 +828,8 @@ mod tests {
     fn ac2_left_aspects_out_of_claim() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
 
         // claim.aspect_refs = ["accuracy"]; query.left_aspects = ["judge-score"]
         let query = RelationQuery::parse(&json!({
@@ -815,8 +867,8 @@ mod tests {
     fn ac3_right_aspects_out_of_claim() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
 
         let query = RelationQuery::parse(&json!({
             "left_aspects":  ["accuracy"],
@@ -853,8 +905,8 @@ mod tests {
     fn ac4_predicate_mismatch() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
 
         // Claims have predicate "score"; query has predicate "other"
         let query = RelationQuery::parse(&json!({
@@ -892,8 +944,8 @@ mod tests {
     fn ac5_content_type_mismatch() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
 
         // left.content = object; right.content = number
         let input = PairwiseInput {
@@ -923,8 +975,8 @@ mod tests {
     fn ac6_object_shape_mismatch() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
 
         // left.content keys = {value, unit}; right.content keys = {value}
         let input = PairwiseInput {
@@ -959,8 +1011,8 @@ mod tests {
     fn ac7_same_frame_comparable() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated {
@@ -988,7 +1040,6 @@ mod tests {
     fn ac8_same_frame_different_query_aspects() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
 
         let frame_v = json!({
             "version": "0.1",
@@ -1000,6 +1051,8 @@ mod tests {
             "exclusions": ["e"]
         });
         let frame = Frame::parse(&frame_v).expect("frame");
+        // Derive the hash from the same JSON value so the triple is consistent.
+        let fh = frame.canonical_hash().to_string();
 
         // Both claims have aspects ["accuracy", "pass-rate"]
         // but query.left_aspects = ["accuracy"] and query.right_aspects = ["pass-rate"]
@@ -1036,10 +1089,10 @@ mod tests {
     fn ac9_cross_frame_no_bridges() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated {
@@ -1067,11 +1120,11 @@ mod tests {
     fn ac10_bridge_frame_mismatch() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
         let fh_x = format!("sha256:{}", "0".repeat(64));
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
 
         // Bridge declares source=X (not fh_a), so frame match fails.
         let bad_bridge = json!({
@@ -1112,10 +1165,10 @@ mod tests {
     fn ac11_bridge_scope_mismatch() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         // Bridge matches frames but scope covers "judge-score", not "accuracy".
         let bad_scope_bridge = json!({
@@ -1156,10 +1209,10 @@ mod tests {
     fn ac12_bridged_comparable() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         let good_bridge = json!({
             "version": "0.1",
@@ -1199,10 +1252,10 @@ mod tests {
     fn ac13_invalid_bridge_ignored() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         // Missing `version` → Bridge::parse fails.
         let invalid_bridge = json!({
@@ -1242,10 +1295,10 @@ mod tests {
     fn ac15_bridge_direction_enforced() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         // Bridge source=B, target=A; but receipts are (left=A, right=B) → mismatch.
         let reversed_bridge = json!({
@@ -1286,10 +1339,10 @@ mod tests {
     fn ac16_supplied_bridge_participates() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         // No bridge_refs on claims; bridge is supplied out-of-band.
         let good_bridge = json!({
@@ -1348,8 +1401,8 @@ mod tests {
     fn ac17_profile_check_pairwise_invoked_after_compat() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
         let profile = RejectAllPairwise;
 
         let input = PairwiseInput {
@@ -1377,8 +1430,8 @@ mod tests {
     fn ac18_profile_rejection_same_frame_branch_not_entered() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
         let profile = RejectAllPairwise;
 
         let input = PairwiseInput {
@@ -1405,10 +1458,10 @@ mod tests {
     fn ac19_profile_rejection_cross_frame_not_entered() {
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
         let profile = RejectAllPairwise;
 
         let input = PairwiseInput {
@@ -1441,8 +1494,8 @@ mod tests {
         let bridges = EmptyBridgeResolver;
         let carrier = UnreachableCarrier;
 
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
         let profile = RejectAllPairwise;
 
         let input = PairwiseInput {
@@ -1476,10 +1529,10 @@ mod tests {
         // AplCrossFrame + AplBridgeNotFound.
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh_a = canonical_hash(&frame_value_a()).to_string();
-        let fh_b = canonical_hash(&frame_value_b()).to_string();
-        let frame_a = make_frame("mmlu/dev");
-        let frame_b = make_frame("mmlu/test-lite");
+        let frame_a = fixture_frame_a();
+        let frame_b = fixture_frame_b();
+        let fh_a = frame_a.canonical_hash().to_string();
+        let fh_b = frame_b.canonical_hash().to_string();
 
         let input = PairwiseInput {
             left: ReceiptInput::Prevalidated {
@@ -1508,8 +1561,8 @@ mod tests {
         // This test simply verifies the variant is constructible with all
         // three fields — ensuring the compile-time guard exists.
         // Removing `frame` from the initializer is a rustc compile error.
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
         let input = ReceiptInput::Prevalidated {
             output: core_valid_output(),
             claim: make_claim(&fh, &["accuracy"], "score", json!(0.78)),
@@ -1710,6 +1763,163 @@ mod tests {
         ));
     }
 
+    // ---- Prevalidated runtime consistency checks ----------------------------
+
+    /// A Prevalidated triple whose `frame.canonical_hash()` does NOT match
+    /// `claim.frame_ref.hash` must be rejected with `RelationNotEvaluated` and
+    /// `apl-pair-prevalidated-inconsistent` before any pairwise logic runs.
+    #[test]
+    fn prevalidated_frame_hash_mismatch_returns_not_evaluated() {
+        let frames = EmptyFrameResolver;
+        let bridges = EmptyBridgeResolver;
+        let carrier = UnreachableCarrier;
+
+        // Use fixture_frame_a() but pin the claim to a deliberately wrong hash.
+        let frame = fixture_frame_a();
+        let wrong_hash = format!("sha256:{}", "9".repeat(64));
+        let claim = make_claim(&wrong_hash, &["accuracy"], "score", json!(0.78));
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim,
+                frame,
+            },
+            right: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: {
+                    let f = fixture_frame_a();
+                    let fh = f.canonical_hash().to_string();
+                    make_claim(&fh, &["accuracy"], "score", json!(0.79))
+                },
+                frame: fixture_frame_a(),
+            },
+            query: base_query(),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &carrier, &frames, &bridges, None);
+        assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
+        assert!(out
+            .diagnostics
+            .contains(&D::APL_PAIR_PREVALIDATED_INCONSISTENT));
+        // Must NOT produce apl-pair-left-invalid — inconsistency is a distinct path.
+        assert!(!out.diagnostics.contains(&D::APL_PAIR_LEFT_INVALID));
+    }
+
+    /// A Prevalidated triple with `output.core_outcome = AplInvalid` contradicts
+    /// the Prevalidated contract (which implies a successful CORE-VERIFY-1 run).
+    /// The pair must return `RelationNotEvaluated` and
+    /// `apl-pair-prevalidated-inconsistent`.
+    #[test]
+    fn prevalidated_output_invalid_returns_not_evaluated() {
+        let frames = EmptyFrameResolver;
+        let bridges = EmptyBridgeResolver;
+        let carrier = UnreachableCarrier;
+
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated {
+                // AplInvalid in a Prevalidated triple is inconsistent.
+                output: core_invalid_output(),
+                claim: make_claim(&fh, &["accuracy"], "score", json!(0.78)),
+                frame,
+            },
+            right: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: make_claim(&fh, &["accuracy"], "score", json!(0.79)),
+                frame: fixture_frame_a(),
+            },
+            query: base_query(),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &carrier, &frames, &bridges, None);
+        assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
+        assert!(out
+            .diagnostics
+            .contains(&D::APL_PAIR_PREVALIDATED_INCONSISTENT));
+        // left.core_outcome must reflect what the caller passed (AplInvalid),
+        // not be overridden by the consistency check.
+        assert_eq!(out.left.core_outcome, CoreOutcome::AplInvalid);
+    }
+
+    /// A Prevalidated triple whose `claim.aspect_refs` contains a value absent
+    /// from `frame.aspect` violates the §9.7 invariant that CORE-VERIFY-1 would
+    /// have enforced. The pair must return `RelationNotEvaluated` and
+    /// `apl-pair-prevalidated-inconsistent`.
+    #[test]
+    fn prevalidated_aspect_linkage_mismatch_returns_not_evaluated() {
+        let frames = EmptyFrameResolver;
+        let bridges = EmptyBridgeResolver;
+        let carrier = UnreachableCarrier;
+
+        // fixture_frame_a() has aspect = ["accuracy"]. Claim references "judge-score"
+        // which is not in that frame → aspect linkage violation.
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: make_claim(&fh, &["judge-score"], "score", json!(0.78)),
+                frame,
+            },
+            right: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: make_claim(&fh, &["accuracy"], "score", json!(0.79)),
+                frame: fixture_frame_a(),
+            },
+            query: RelationQuery::parse(&json!({
+                "left_aspects":  ["judge-score"],
+                "right_aspects": ["accuracy"],
+                "predicate":     "score",
+                "relation_type": "score-delta"
+            }))
+            .expect("valid query"),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &carrier, &frames, &bridges, None);
+        assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
+        assert!(out
+            .diagnostics
+            .contains(&D::APL_PAIR_PREVALIDATED_INCONSISTENT));
+    }
+
+    /// A Prevalidated triple that passes all three runtime consistency checks
+    /// (hash matches, output is AplValid, aspect_refs ⊆ frame.aspect) must
+    /// proceed to normal pairwise evaluation and yield `SameFrameComparable`.
+    #[test]
+    fn prevalidated_consistent_triple_proceeds_normally() {
+        let frames = EmptyFrameResolver;
+        let bridges = EmptyBridgeResolver;
+        let carrier = UnreachableCarrier;
+
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
+
+        let input = PairwiseInput {
+            left: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: make_claim(&fh, &["accuracy"], "score", json!(0.78)),
+                frame,
+            },
+            right: ReceiptInput::Prevalidated {
+                output: core_valid_output(),
+                claim: make_claim(&fh, &["accuracy"], "score", json!(0.79)),
+                frame: fixture_frame_a(),
+            },
+            query: base_query(),
+            supplied_bridges: vec![],
+        };
+        let out = evaluate_relation(input, &carrier, &frames, &bridges, None);
+        // Happy path: consistent triple reaches same-frame evaluation.
+        assert_eq!(out.relation_outcome, RelationOutcome::SameFrameComparable);
+        assert!(!out
+            .diagnostics
+            .contains(&D::APL_PAIR_PREVALIDATED_INCONSISTENT));
+    }
+
     // ---- RejectAllPairwise id() coverage (line 1331-1333) -------------------
 
     #[test]
@@ -1735,8 +1945,8 @@ mod tests {
 
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let fh = canonical_hash(&frame_value_a()).to_string();
-        let frame = make_frame("mmlu/dev");
+        let frame = fixture_frame_a();
+        let fh = frame.canonical_hash().to_string();
         let profile = AcceptAllPairwise;
         assert_eq!(profile.id(), "accept-all-pairwise");
 
