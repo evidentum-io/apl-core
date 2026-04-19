@@ -157,13 +157,54 @@ mod mod_tests {
         assert_eq!(profile.id(), "apl/ai-eval/v0.1");
     }
 
-    // check_bridge_applicability via &dyn Profile returns Ok(()).
+    // check_bridge_applicability via &dyn Profile returns Ok(()) for a
+    // fully-conformant runner-equivalence bridge.
     #[test]
     fn check_bridge_applicability_via_dyn_profile_returns_ok() {
+        let common_scope = json!({
+            "benchmark_id": "mmlu",
+            "benchmark_variant": "default",
+            "dataset_split": "dev"
+        });
+        let required_exclusions = json!([
+            "no-production-readiness-claim",
+            "no-deployment-safety-claim",
+            "no-out-of-scope-generalization-claim"
+        ]);
+
+        let src = Frame::parse(&json!({
+            "version": "0.1",
+            "observer": { "id": "acme-eval-lab" },
+            "procedure": {
+                "runner_id": "lm-eval-harness@0.4.2",
+                "grader_id": "exact-match-v1"
+            },
+            "aspect": ["accuracy"],
+            "scope": common_scope.clone(),
+            "invariance": ["score-object-serialization"],
+            "exclusions": required_exclusions.clone()
+        }))
+        .expect("valid source frame fixture");
+
+        let tgt = Frame::parse(&json!({
+            "version": "0.1",
+            "observer": { "id": "acme-eval-lab" },
+            "procedure": {
+                "runner_id": "custom-runner@2.1",
+                "grader_id": "exact-match-v1"
+            },
+            "aspect": ["accuracy"],
+            "scope": common_scope,
+            "invariance": ["score-object-serialization"],
+            "exclusions": required_exclusions
+        }))
+        .expect("valid target frame fixture");
+
         let bridge = Bridge::parse(&json!({
             "version": "0.1",
-            "source_frame": { "hash": h(0xaa) },
-            "target_frame": { "hash": h(0xbb) },
+            "bridge_kind": "runner-equivalence",
+            "source_frame": { "hash": src.canonical_hash().to_string() },
+            "target_frame": { "hash": tgt.canonical_hash().to_string() },
             "comparison_scope": {
                 "source_aspects": ["accuracy"],
                 "target_aspects": ["accuracy"],
@@ -173,28 +214,6 @@ mod mod_tests {
             "losses": []
         }))
         .expect("valid bridge fixture");
-
-        let src = Frame::parse(&json!({
-            "version": "0.1",
-            "observer": "src-lab",
-            "procedure": "p",
-            "aspect": ["accuracy"],
-            "scope": "s",
-            "invariance": ["i"],
-            "exclusions": ["e"]
-        }))
-        .expect("valid frame fixture");
-
-        let tgt = Frame::parse(&json!({
-            "version": "0.1",
-            "observer": "tgt-lab",
-            "procedure": "p",
-            "aspect": ["accuracy"],
-            "scope": "s",
-            "invariance": ["i"],
-            "exclusions": ["e"]
-        }))
-        .expect("valid frame fixture");
 
         let query = RelationQuery::parse(&json!({
             "left_aspects": ["accuracy"],
@@ -209,7 +228,7 @@ mod mod_tests {
             profile
                 .check_bridge_applicability(&bridge, &src, &tgt, &query)
                 .is_ok(),
-            "bridge applicability stub must return Ok(())"
+            "runner-equivalence bridge applicability must return Ok(())"
         );
     }
 
