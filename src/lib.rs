@@ -27,13 +27,20 @@
 //! let frames = InMemoryFrameResolver::new();
 //! let bridges = InMemoryBridgeResolver::new();
 //!
-//! let output = verify_receipt(
+//! let (output, verified) = verify_receipt(
 //!     receipt_bytes, carrier, &frames, &bridges, None,
 //! );
 //!
 //! match output.core_outcome {
-//!     CoreOutcome::AplValid => println!("{}", output.to_json_pretty()),
+//!     CoreOutcome::AplValid => {
+//!         println!("{}", output.to_json_pretty());
+//!         // `verified` is `Some(VerifiedReceipt)` — an opaque token that can
+//!         // be passed to `evaluate_relation` via `ReceiptInput::Prevalidated`
+//!         // without re-running carrier validation.
+//!         let _reusable: VerifiedReceipt = verified.unwrap();
+//!     }
 //!     CoreOutcome::AplInvalid => {
+//!         // `verified` is `None` — the token is only minted for AplValid receipts.
 //!         println!("invalid: {:?}", output.failure_classes);
 //!         for d in &output.diagnostics {
 //!             println!("  - {d}");
