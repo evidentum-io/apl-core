@@ -5,6 +5,15 @@
 //! strings in the normative sources. They MUST NOT carry payload — they are
 //! opaque markers only.
 //!
+//! # Coverage relative to apl-spec.md §12.3 and apl-relation-spec.md §9
+//!
+//! Not every code listed in the normative specs is exported here. apl-core
+//! exports only codes that are actually emitted by this implementation.
+//! Status-marker codes and outcome-duplicate codes (e.g. `apl-invalid`,
+//! `bridged`, `comparable`) are not exported because their information is
+//! already carried by `CoreOutcome` / `RelationOutcome` enums in structured
+//! form.
+//!
 //! # Extensibility
 //!
 //! [`DiagnosticCode`] is a `#[repr(transparent)]` newtype over `&'static str`.
@@ -103,7 +112,6 @@ impl DiagnosticCode {
             self.0,
             "apl-pair-left-invalid"
                 | "apl-pair-right-invalid"
-                | "apl-relation-query-invalid"
                 | "apl-relation-query-left-aspects-out-of-claim"
                 | "apl-relation-query-right-aspects-out-of-claim"
                 | "apl-relation-query-predicate-mismatch"
@@ -119,7 +127,6 @@ impl DiagnosticCode {
                 | "apl-bridge-scope-mismatch"
                 | "apl-bridge-applicable"
                 | "apl-bridge-hash-mismatch"
-                | "apl-transformation-declared"
         )
     }
 }
@@ -176,6 +183,13 @@ pub fn register_diagnostic_codes(codes: &[&'static str]) {
 ///
 /// Called automatically before the first deserialization. Downstream code
 /// does not need to call this explicitly.
+///
+/// # Invariant
+///
+/// Every code listed here MUST have at least one emission site in
+/// `src/core/verify.rs` or `src/core/evaluate.rs`. Adding a constant to this
+/// list without a corresponding `diagnostics.push(...)` call creates dead
+/// public API — audit this function whenever the diagnostic vocabulary changes.
 fn ensure_core_registered() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
@@ -214,7 +228,6 @@ fn ensure_core_registered() {
             APL_FRAME_BOUND.as_str(),
             APL_FRAME_REF_INVALID.as_str(),
             APL_FRAME_MISSING.as_str(),
-            APL_FRAME_HASH_INVALID.as_str(),
             APL_FRAME_UNRESOLVED.as_str(),
             APL_FRAME_HASH_MISMATCH.as_str(),
             APL_FRAME_VERSION_MISSING.as_str(),
@@ -232,23 +245,15 @@ fn ensure_core_registered() {
             APL_TRANSFORMATION_REFS_INVALID.as_str(),
             // Core outcome markers
             APL_VALID.as_str(),
-            APL_INVALID.as_str(),
-            // Relation outcome markers
+            // Relation topology markers (single-receipt path)
             SAME_FRAME.as_str(),
             CROSS_FRAME.as_str(),
-            BRIDGED.as_str(),
-            UNBRIDGED.as_str(),
-            COMPARABLE.as_str(),
-            INCOMPARABLE.as_str(),
             // Transformation markers
             TRANSFORMATION_DECLARED.as_str(),
             TRANSFORMATION_MISSING.as_str(),
-            LOSS_DECLARED.as_str(),
-            LOSS_UNDECLARED.as_str(),
             // Pairwise diagnostics
             APL_PAIR_LEFT_INVALID.as_str(),
             APL_PAIR_RIGHT_INVALID.as_str(),
-            APL_RELATION_QUERY_INVALID.as_str(),
             APL_RELATION_QUERY_LEFT_ASPECTS_OUT_OF_CLAIM.as_str(),
             APL_RELATION_QUERY_RIGHT_ASPECTS_OUT_OF_CLAIM.as_str(),
             APL_RELATION_QUERY_PREDICATE_MISMATCH.as_str(),
@@ -264,7 +269,6 @@ fn ensure_core_registered() {
             APL_BRIDGE_SCOPE_MISMATCH.as_str(),
             APL_BRIDGE_APPLICABLE.as_str(),
             APL_BRIDGE_HASH_MISMATCH.as_str(),
-            APL_TRANSFORMATION_DECLARED.as_str(),
         ]);
     });
 }
@@ -374,8 +378,6 @@ pub const APL_FRAME_BOUND: DiagnosticCode = DiagnosticCode::new("apl-frame-bound
 pub const APL_FRAME_REF_INVALID: DiagnosticCode = DiagnosticCode::new("apl-frame-ref-invalid");
 /// Frame artifact was not found by the resolver.
 pub const APL_FRAME_MISSING: DiagnosticCode = DiagnosticCode::new("apl-frame-missing");
-/// `frame_ref.hash` field is absent or malformed.
-pub const APL_FRAME_HASH_INVALID: DiagnosticCode = DiagnosticCode::new("apl-frame-hash-invalid");
 /// Frame could not be resolved (infra failure or timeout).
 pub const APL_FRAME_UNRESOLVED: DiagnosticCode = DiagnosticCode::new("apl-frame-unresolved");
 /// Resolved frame's canonical hash does not match `frame_ref.hash`.
@@ -427,38 +429,29 @@ pub const APL_TRANSFORMATION_REFS_INVALID: DiagnosticCode =
 
 /// Receipt passed all verifier checks.
 pub const APL_VALID: DiagnosticCode = DiagnosticCode::new("apl-valid");
-/// Receipt failed one or more verifier checks.
-pub const APL_INVALID: DiagnosticCode = DiagnosticCode::new("apl-invalid");
 
 // ---------------------------------------------------------------------------
-// apl-spec.md §12.3 — Relation outcome markers
+// apl-spec.md §12.3 — Relation topology markers (single-receipt path)
 // ---------------------------------------------------------------------------
 
-/// Both receipts reference the same frame.
+/// Both receipts of a single-receipt pair reference the same frame.
+///
+/// Emitted by `verify_receipt` when `claim.related_frames` is empty / absent,
+/// indicating the claim is not part of a cross-frame pair.
 pub const SAME_FRAME: DiagnosticCode = DiagnosticCode::new("same-frame");
-/// Receipts reference different frames.
+/// The receipt references at least one different frame in `related_frames`.
+///
+/// Emitted by `verify_receipt` when `claim.is_cross_frame()` returns `true`.
 pub const CROSS_FRAME: DiagnosticCode = DiagnosticCode::new("cross-frame");
-/// A bridge artifact was found and is applicable.
-pub const BRIDGED: DiagnosticCode = DiagnosticCode::new("bridged");
-/// No applicable bridge artifact was found.
-pub const UNBRIDGED: DiagnosticCode = DiagnosticCode::new("unbridged");
-/// The pair is semantically comparable under the query constraints.
-pub const COMPARABLE: DiagnosticCode = DiagnosticCode::new("comparable");
-/// The pair is not semantically comparable under the query constraints.
-pub const INCOMPARABLE: DiagnosticCode = DiagnosticCode::new("incomparable");
 
 // ---------------------------------------------------------------------------
 // apl-spec.md §12.3 — Transformation markers
 // ---------------------------------------------------------------------------
 
-/// A transformation is declared for this pair.
+/// A transformation is declared for this pair (`claim.transformation_refs` is present).
 pub const TRANSFORMATION_DECLARED: DiagnosticCode = DiagnosticCode::new("transformation-declared");
-/// No transformation is declared for this pair.
+/// No transformation is declared for this pair (`claim.transformation_refs` is absent).
 pub const TRANSFORMATION_MISSING: DiagnosticCode = DiagnosticCode::new("transformation-missing");
-/// The transformation declares a loss of information.
-pub const LOSS_DECLARED: DiagnosticCode = DiagnosticCode::new("loss-declared");
-/// The transformation does not declare a loss of information.
-pub const LOSS_UNDECLARED: DiagnosticCode = DiagnosticCode::new("loss-undeclared");
 
 // ---------------------------------------------------------------------------
 // apl-relation-spec.md §9 — Pairwise diagnostics
@@ -468,9 +461,6 @@ pub const LOSS_UNDECLARED: DiagnosticCode = DiagnosticCode::new("loss-undeclared
 pub const APL_PAIR_LEFT_INVALID: DiagnosticCode = DiagnosticCode::new("apl-pair-left-invalid");
 /// The right receipt of the pair is `apl-invalid`.
 pub const APL_PAIR_RIGHT_INVALID: DiagnosticCode = DiagnosticCode::new("apl-pair-right-invalid");
-/// The `RelationQuery` object fails structural validation.
-pub const APL_RELATION_QUERY_INVALID: DiagnosticCode =
-    DiagnosticCode::new("apl-relation-query-invalid");
 /// `query.left_aspects` contains an aspect not in the left receipt's claim.
 pub const APL_RELATION_QUERY_LEFT_ASPECTS_OUT_OF_CLAIM: DiagnosticCode =
     DiagnosticCode::new("apl-relation-query-left-aspects-out-of-claim");
@@ -515,10 +505,6 @@ pub const APL_BRIDGE_APPLICABLE: DiagnosticCode = DiagnosticCode::new("apl-bridg
 /// resolver must not substitute a different bridge for the one pinned by the claim.
 pub const APL_BRIDGE_HASH_MISMATCH: DiagnosticCode =
     DiagnosticCode::new("apl-bridge-hash-mismatch");
-/// Transformation is declared in the bridge artifact for this pair.
-pub const APL_TRANSFORMATION_DECLARED: DiagnosticCode =
-    DiagnosticCode::new("apl-transformation-declared");
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
