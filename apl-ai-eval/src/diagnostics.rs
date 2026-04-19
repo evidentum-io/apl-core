@@ -6,7 +6,9 @@ use apl_core::diagnostics::DiagnosticCode;
 // apl-ai-eval-profile.md §7.8 — Profile diagnostics (bridge)
 // ---------------------------------------------------------------------------
 
-/// AI-Eval bridge: `bridge_kind` is not `"ai-eval"`.
+/// AI-Eval bridge: `bridge_kind` field is missing, is not a string, or is not
+/// in the allowed set `{"runner-equivalence", "grader-equivalence", "repeatability"}`
+/// per `apl-ai-eval-profile.md §7.2`.
 pub const APL_AI_EVAL_BRIDGE_KIND_INVALID: DiagnosticCode =
     DiagnosticCode::new("apl-ai-eval-bridge-kind-invalid");
 /// AI-Eval bridge: source aspect does not match the expected profile aspect.
