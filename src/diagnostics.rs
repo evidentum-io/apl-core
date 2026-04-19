@@ -207,10 +207,12 @@ fn ensure_core_registered() {
             // APL envelope
             APL_PRESENT.as_str(),
             APL_MISSING.as_str(),
+            APL_INVALID_SHAPE.as_str(),
             APL_VERSION_MISSING.as_str(),
             APL_VERSION_UNSUPPORTED.as_str(),
             // Claim structure
             APL_CLAIM_MISSING.as_str(),
+            APL_CLAIM_INVALID.as_str(),
             APL_CLAIM_KIND_MISSING.as_str(),
             APL_CLAIM_KIND_UNSUPPORTED.as_str(),
             APL_SUBJECT_MISSING.as_str(),
@@ -239,6 +241,7 @@ fn ensure_core_registered() {
             APL_FRAME_PROCEDURE_OR_INSTRUMENT_MISSING.as_str(),
             APL_FRAME_SCOPE_OR_RESOLUTION_MISSING.as_str(),
             APL_FRAME_KERNEL_MISSING.as_str(),
+            APL_FRAME_KERNEL_INVALID.as_str(),
             // Relation-layer envelope
             APL_RELATED_FRAMES_INVALID.as_str(),
             APL_BRIDGE_REFS_INVALID.as_str(),
@@ -327,6 +330,8 @@ pub const CARRIER_INVALID: DiagnosticCode = DiagnosticCode::new("carrier-invalid
 pub const APL_PRESENT: DiagnosticCode = DiagnosticCode::new("apl-present");
 /// `metadata.apl` is absent.
 pub const APL_MISSING: DiagnosticCode = DiagnosticCode::new("apl-missing");
+/// `metadata.apl` key is present but its value is not a JSON object.
+pub const APL_INVALID_SHAPE: DiagnosticCode = DiagnosticCode::new("apl-invalid-shape");
 /// `metadata.apl.version` field is absent.
 pub const APL_VERSION_MISSING: DiagnosticCode = DiagnosticCode::new("apl-version-missing");
 /// `metadata.apl.version` names an unsupported protocol version.
@@ -338,6 +343,8 @@ pub const APL_VERSION_UNSUPPORTED: DiagnosticCode = DiagnosticCode::new("apl-ver
 
 /// `metadata.apl.claim` is absent.
 pub const APL_CLAIM_MISSING: DiagnosticCode = DiagnosticCode::new("apl-claim-missing");
+/// `metadata.apl.claim` key is present but its value is not a JSON object.
+pub const APL_CLAIM_INVALID: DiagnosticCode = DiagnosticCode::new("apl-claim-invalid");
 /// `claim.kind` field is absent.
 pub const APL_CLAIM_KIND_MISSING: DiagnosticCode = DiagnosticCode::new("apl-claim-kind-missing");
 /// `claim.kind` names an unsupported kind.
@@ -409,6 +416,10 @@ pub const APL_FRAME_SCOPE_OR_RESOLUTION_MISSING: DiagnosticCode =
 /// `frame.kernel` is absent.
 pub const APL_FRAME_KERNEL_MISSING: DiagnosticCode =
     DiagnosticCode::new("apl-frame-kernel-missing");
+/// A kernel field (`procedure`, `instrument`, `scope`, `resolution`) is present but
+/// type-wrong, or `extends` is present but malformed.
+pub const APL_FRAME_KERNEL_INVALID: DiagnosticCode =
+    DiagnosticCode::new("apl-frame-kernel-invalid");
 
 // ---------------------------------------------------------------------------
 // apl-spec.md §12.3 — Relation-layer envelope
