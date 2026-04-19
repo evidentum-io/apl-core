@@ -27,43 +27,18 @@ use crate::core::bridge::Bridge;
 use crate::core::carrier::CarrierVerifier;
 use crate::core::claim::{Claim, Statement};
 use crate::core::frame::Frame;
-use crate::core::output::{CoreOutcome, RelationOutcome, VerifierOutput};
+use crate::core::output::{CoreOutcome, PairwiseOutput, RelationOutcome, SideCore, VerifierOutput};
 use crate::core::relation::RelationQuery;
 use crate::core::resolver::{BridgeResolution, BridgeResolver, FrameResolver};
 use crate::core::verify::verify_receipt_with_claim_and_frame;
 use crate::diagnostics::{self as D, DiagnosticCode};
+#[cfg(test)]
 use crate::failure::FailureClass;
 use crate::profile::trait_def::Profile;
 
 // ---------------------------------------------------------------------------
 // Public data structures
 // ---------------------------------------------------------------------------
-
-/// Output of pairwise relation evaluation (RELATION-1).
-///
-/// Produced by [`evaluate_relation`]. Contains per-side core outcomes,
-/// the pairwise [`RelationOutcome`], and ordered diagnostics from
-/// `apl-relation-spec.md §9`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairwiseOutput {
-    /// Core outcome for the left receipt.
-    pub left_core: CoreOutcome,
-    /// Core outcome for the right receipt.
-    pub right_core: CoreOutcome,
-
-    /// Per-side failure classes (empty when core-valid).
-    pub left_failures: Vec<FailureClass>,
-    /// Per-side failure classes (empty when core-valid).
-    pub right_failures: Vec<FailureClass>,
-
-    /// Pairwise relation outcome per `apl-relation-spec.md §7.8`.
-    pub relation_outcome: RelationOutcome,
-
-    /// Pairwise diagnostics per `apl-relation-spec.md §9`, plus any
-    /// profile-specific diagnostics from `Profile::check_pairwise_relation`
-    /// or `Profile::check_bridge_applicability`.
-    pub diagnostics: Vec<DiagnosticCode>,
-}
 
 /// Input for one side of the pairwise relation evaluation.
 ///
@@ -229,10 +204,14 @@ pub fn evaluate_relation(
         || right_frame_opt.is_none()
     {
         return PairwiseOutput {
-            left_core: left_out.core_outcome,
-            right_core: right_out.core_outcome,
-            left_failures: left_out.failure_classes,
-            right_failures: right_out.failure_classes,
+            left: SideCore {
+                core_outcome: left_out.core_outcome,
+                failure_classes: left_out.failure_classes,
+            },
+            right: SideCore {
+                core_outcome: right_out.core_outcome,
+                failure_classes: right_out.failure_classes,
+            },
             relation_outcome: RelationOutcome::RelationNotEvaluated,
             diagnostics,
         };
@@ -286,10 +265,14 @@ pub fn evaluate_relation(
     // STEP 8: return early if any precondition failed.
     if precondition_failed {
         return PairwiseOutput {
-            left_core: left_out.core_outcome,
-            right_core: right_out.core_outcome,
-            left_failures: left_out.failure_classes,
-            right_failures: right_out.failure_classes,
+            left: SideCore {
+                core_outcome: left_out.core_outcome,
+                failure_classes: left_out.failure_classes,
+            },
+            right: SideCore {
+                core_outcome: right_out.core_outcome,
+                failure_classes: right_out.failure_classes,
+            },
             relation_outcome: RelationOutcome::RelationNotEvaluated,
             diagnostics,
         };
@@ -301,10 +284,14 @@ pub fn evaluate_relation(
         StructuralCompat::TopLevelTypeMismatch => {
             diagnostics.push(D::APL_STATEMENT_CONTENT_TYPE_MISMATCH);
             return PairwiseOutput {
-                left_core: left_out.core_outcome,
-                right_core: right_out.core_outcome,
-                left_failures: left_out.failure_classes,
-                right_failures: right_out.failure_classes,
+                left: SideCore {
+                    core_outcome: left_out.core_outcome,
+                    failure_classes: left_out.failure_classes,
+                },
+                right: SideCore {
+                    core_outcome: right_out.core_outcome,
+                    failure_classes: right_out.failure_classes,
+                },
                 relation_outcome: RelationOutcome::Incomparable,
                 diagnostics,
             };
@@ -312,10 +299,14 @@ pub fn evaluate_relation(
         StructuralCompat::ObjectShapeMismatch => {
             diagnostics.push(D::APL_STATEMENT_OBJECT_SHAPE_MISMATCH);
             return PairwiseOutput {
-                left_core: left_out.core_outcome,
-                right_core: right_out.core_outcome,
-                left_failures: left_out.failure_classes,
-                right_failures: right_out.failure_classes,
+                left: SideCore {
+                    core_outcome: left_out.core_outcome,
+                    failure_classes: left_out.failure_classes,
+                },
+                right: SideCore {
+                    core_outcome: right_out.core_outcome,
+                    failure_classes: right_out.failure_classes,
+                },
                 relation_outcome: RelationOutcome::Incomparable,
                 diagnostics,
             };
@@ -338,10 +329,14 @@ pub fn evaluate_relation(
             Err(profile_diags) => {
                 diagnostics.extend(profile_diags);
                 return PairwiseOutput {
-                    left_core: left_out.core_outcome,
-                    right_core: right_out.core_outcome,
-                    left_failures: left_out.failure_classes,
-                    right_failures: right_out.failure_classes,
+                    left: SideCore {
+                        core_outcome: left_out.core_outcome,
+                        failure_classes: left_out.failure_classes,
+                    },
+                    right: SideCore {
+                        core_outcome: right_out.core_outcome,
+                        failure_classes: right_out.failure_classes,
+                    },
                     relation_outcome: RelationOutcome::Incomparable,
                     diagnostics,
                 };
@@ -358,10 +353,14 @@ pub fn evaluate_relation(
             diagnostics.push(D::APL_SAME_FRAME_ASPECT_MATCH);
             // STEP 13
             return PairwiseOutput {
-                left_core: left_out.core_outcome,
-                right_core: right_out.core_outcome,
-                left_failures: left_out.failure_classes,
-                right_failures: right_out.failure_classes,
+                left: SideCore {
+                    core_outcome: left_out.core_outcome,
+                    failure_classes: left_out.failure_classes,
+                },
+                right: SideCore {
+                    core_outcome: right_out.core_outcome,
+                    failure_classes: right_out.failure_classes,
+                },
                 relation_outcome: RelationOutcome::SameFrameComparable,
                 diagnostics,
             };
@@ -370,10 +369,14 @@ pub fn evaluate_relation(
         diagnostics.push(D::APL_SAME_FRAME_ASPECT_MISMATCH);
         // STEP 14
         return PairwiseOutput {
-            left_core: left_out.core_outcome,
-            right_core: right_out.core_outcome,
-            left_failures: left_out.failure_classes,
-            right_failures: right_out.failure_classes,
+            left: SideCore {
+                core_outcome: left_out.core_outcome,
+                failure_classes: left_out.failure_classes,
+            },
+            right: SideCore {
+                core_outcome: right_out.core_outcome,
+                failure_classes: right_out.failure_classes,
+            },
             relation_outcome: RelationOutcome::Incomparable,
             diagnostics,
         };
@@ -399,10 +402,14 @@ pub fn evaluate_relation(
     if candidate_values.is_empty() {
         diagnostics.push(D::APL_BRIDGE_NOT_FOUND);
         return PairwiseOutput {
-            left_core: left_out.core_outcome,
-            right_core: right_out.core_outcome,
-            left_failures: left_out.failure_classes,
-            right_failures: right_out.failure_classes,
+            left: SideCore {
+                core_outcome: left_out.core_outcome,
+                failure_classes: left_out.failure_classes,
+            },
+            right: SideCore {
+                core_outcome: right_out.core_outcome,
+                failure_classes: right_out.failure_classes,
+            },
             relation_outcome: RelationOutcome::Incomparable,
             diagnostics,
         };
@@ -474,10 +481,14 @@ pub fn evaluate_relation(
     };
 
     PairwiseOutput {
-        left_core: left_out.core_outcome,
-        right_core: right_out.core_outcome,
-        left_failures: left_out.failure_classes,
-        right_failures: right_out.failure_classes,
+        left: SideCore {
+            core_outcome: left_out.core_outcome,
+            failure_classes: left_out.failure_classes,
+        },
+        right: SideCore {
+            core_outcome: right_out.core_outcome,
+            failure_classes: right_out.failure_classes,
+        },
         relation_outcome,
         diagnostics,
     }
