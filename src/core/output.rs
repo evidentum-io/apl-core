@@ -3,7 +3,7 @@
 //! These types carry the result of a single-receipt verification call
 //! (`CORE-VERIFY-1`) or a pairwise relation evaluation (`RELATION-1`).
 
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::DiagnosticCode;
 use crate::failure::FailureClass;
 
 /// Outcome of APL core verification per `apl-spec.md §13`.
@@ -56,12 +56,13 @@ pub struct VerifierOutput {
     /// Zero or more failure classes; empty iff `core_outcome == AplValid`.
     pub failure_classes: Vec<FailureClass>,
     /// Ordered diagnostic codes per `apl-spec.md §12.3`.
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<DiagnosticCode>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::{APL_VALID, CARRIER_INVALID, CARRIER_VALID};
 
     #[test]
     fn core_outcome_variants() {
@@ -85,7 +86,7 @@ mod tests {
             core_outcome: CoreOutcome::AplValid,
             relation_outcome: RelationOutcome::RelationNotEvaluated,
             failure_classes: Vec::new(),
-            diagnostics: vec![Diagnostic::CarrierValid, Diagnostic::AplValid],
+            diagnostics: vec![CARRIER_VALID, APL_VALID],
         };
         let cloned = out.clone();
         assert_eq!(out, cloned);
@@ -97,7 +98,7 @@ mod tests {
             core_outcome: CoreOutcome::AplInvalid,
             relation_outcome: RelationOutcome::RelationNotEvaluated,
             failure_classes: vec![FailureClass::CarrierFailure],
-            diagnostics: vec![Diagnostic::CarrierInvalid],
+            diagnostics: vec![CARRIER_INVALID],
         };
         let s = format!("{out:?}");
         assert!(s.contains("AplInvalid"));

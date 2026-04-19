@@ -31,7 +31,7 @@ use crate::core::output::{CoreOutcome, RelationOutcome, VerifierOutput};
 use crate::core::relation::RelationQuery;
 use crate::core::resolver::{BridgeResolution, BridgeResolver, FrameResolver};
 use crate::core::verify::verify_receipt_with_claim_and_frame;
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::{self as D, DiagnosticCode};
 use crate::failure::FailureClass;
 use crate::profile::trait_def::Profile;
 
@@ -62,7 +62,7 @@ pub struct PairwiseOutput {
     /// Pairwise diagnostics per `apl-relation-spec.md §9`, plus any
     /// profile-specific diagnostics from `Profile::check_pairwise_relation`
     /// or `Profile::check_bridge_applicability`.
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<DiagnosticCode>,
 }
 
 /// Input for one side of the pairwise relation evaluation.
@@ -199,7 +199,7 @@ pub fn evaluate_relation(
     bridges: &dyn BridgeResolver,
     profile: Option<&dyn Profile>,
 ) -> PairwiseOutput {
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics: Vec<DiagnosticCode> = Vec::new();
 
     // STEPS 1-2: core validation of both sides.
     let (left_out, left_claim_opt, left_frame_opt) =
@@ -211,10 +211,10 @@ pub fn evaluate_relation(
     let right_invalid = right_out.core_outcome == CoreOutcome::AplInvalid;
 
     if left_invalid {
-        diagnostics.push(Diagnostic::AplPairLeftInvalid);
+        diagnostics.push(D::APL_PAIR_LEFT_INVALID);
     }
     if right_invalid {
-        diagnostics.push(Diagnostic::AplPairRightInvalid);
+        diagnostics.push(D::APL_PAIR_RIGHT_INVALID);
     }
 
     // STEP 3: query structural validity — guaranteed by RelationQuery::parse at
@@ -267,11 +267,11 @@ pub fn evaluate_relation(
     let mut precondition_failed = false;
 
     if !left_query_set.is_subset(&left_aspect_set) {
-        diagnostics.push(Diagnostic::AplRelationQueryLeftAspectsOutOfClaim);
+        diagnostics.push(D::APL_RELATION_QUERY_LEFT_ASPECTS_OUT_OF_CLAIM);
         precondition_failed = true;
     }
     if !right_query_set.is_subset(&right_aspect_set) {
-        diagnostics.push(Diagnostic::AplRelationQueryRightAspectsOutOfClaim);
+        diagnostics.push(D::APL_RELATION_QUERY_RIGHT_ASPECTS_OUT_OF_CLAIM);
         precondition_failed = true;
     }
 
@@ -279,7 +279,7 @@ pub fn evaluate_relation(
     if input.query.predicate != left.claim.statement.predicate
         || input.query.predicate != right.claim.statement.predicate
     {
-        diagnostics.push(Diagnostic::AplRelationQueryPredicateMismatch);
+        diagnostics.push(D::APL_RELATION_QUERY_PREDICATE_MISMATCH);
         precondition_failed = true;
     }
 
@@ -299,7 +299,7 @@ pub fn evaluate_relation(
     match structural_compat(&left.claim.statement, &right.claim.statement) {
         StructuralCompat::Compatible => {}
         StructuralCompat::TopLevelTypeMismatch => {
-            diagnostics.push(Diagnostic::AplStatementContentTypeMismatch);
+            diagnostics.push(D::APL_STATEMENT_CONTENT_TYPE_MISMATCH);
             return PairwiseOutput {
                 left_core: left_out.core_outcome,
                 right_core: right_out.core_outcome,
@@ -310,7 +310,7 @@ pub fn evaluate_relation(
             };
         }
         StructuralCompat::ObjectShapeMismatch => {
-            diagnostics.push(Diagnostic::AplStatementObjectShapeMismatch);
+            diagnostics.push(D::APL_STATEMENT_OBJECT_SHAPE_MISMATCH);
             return PairwiseOutput {
                 left_core: left_out.core_outcome,
                 right_core: right_out.core_outcome,
@@ -351,11 +351,11 @@ pub fn evaluate_relation(
 
     // STEP 11: same-frame?
     if left.frame_ref.hash == right.frame_ref.hash {
-        diagnostics.push(Diagnostic::AplSameFrame);
+        diagnostics.push(D::APL_SAME_FRAME);
 
         // STEP 12: aspect set equality.
         if left_query_set == right_query_set {
-            diagnostics.push(Diagnostic::AplSameFrameAspectMatch);
+            diagnostics.push(D::APL_SAME_FRAME_ASPECT_MATCH);
             // STEP 13
             return PairwiseOutput {
                 left_core: left_out.core_outcome,
@@ -367,7 +367,7 @@ pub fn evaluate_relation(
             };
         }
 
-        diagnostics.push(Diagnostic::AplSameFrameAspectMismatch);
+        diagnostics.push(D::APL_SAME_FRAME_ASPECT_MISMATCH);
         // STEP 14
         return PairwiseOutput {
             left_core: left_out.core_outcome,
@@ -380,7 +380,7 @@ pub fn evaluate_relation(
     }
 
     // Cross-frame path.
-    diagnostics.push(Diagnostic::AplCrossFrame);
+    diagnostics.push(D::APL_CROSS_FRAME);
 
     // STEP 15: collect bridge candidates.
     let mut candidate_values: Vec<Value> = Vec::new();
@@ -397,7 +397,7 @@ pub fn evaluate_relation(
     candidate_values.extend(input.supplied_bridges.iter().cloned());
 
     if candidate_values.is_empty() {
-        diagnostics.push(Diagnostic::AplBridgeNotFound);
+        diagnostics.push(D::APL_BRIDGE_NOT_FOUND);
         return PairwiseOutput {
             left_core: left_out.core_outcome,
             right_core: right_out.core_outcome,
@@ -414,7 +414,7 @@ pub fn evaluate_relation(
         let bridge = match Bridge::parse(cand) {
             Ok(b) => b,
             Err(_) => {
-                diagnostics.push(Diagnostic::AplBridgeInvalid);
+                diagnostics.push(D::APL_BRIDGE_INVALID);
                 // STEP 17: structurally-invalid bridges are ignored.
                 continue;
             }
@@ -424,7 +424,7 @@ pub fn evaluate_relation(
         if bridge.source_frame.hash != left.frame_ref.hash
             || bridge.target_frame.hash != right.frame_ref.hash
         {
-            diagnostics.push(Diagnostic::AplBridgeFrameMismatch);
+            diagnostics.push(D::APL_BRIDGE_FRAME_MISMATCH);
             continue;
         }
 
@@ -445,7 +445,7 @@ pub fn evaluate_relation(
             || !right_query_set.is_subset(&bridge_target_set)
             || input.query.relation_type != bridge.comparison_scope.relation_type
         {
-            diagnostics.push(Diagnostic::AplBridgeScopeMismatch);
+            diagnostics.push(D::APL_BRIDGE_SCOPE_MISMATCH);
             continue;
         }
 
@@ -461,7 +461,7 @@ pub fn evaluate_relation(
             }
         }
 
-        diagnostics.push(Diagnostic::AplBridgeApplicable);
+        diagnostics.push(D::APL_BRIDGE_APPLICABLE);
         found_applicable = true;
         break; // One applicable bridge is sufficient (§7 step 18).
     }
@@ -554,7 +554,6 @@ mod tests {
     use crate::core::jcs::canonical_hash;
     use crate::core::output::CoreOutcome;
     use crate::core::resolver::{InMemoryBridgeResolver, InMemoryFrameResolver};
-    use crate::diagnostics::Diagnostic;
 
     // ---- Stub carrier -------------------------------------------------------
 
@@ -665,7 +664,7 @@ mod tests {
             core_outcome: CoreOutcome::AplValid,
             relation_outcome: RelationOutcome::RelationNotEvaluated,
             failure_classes: Vec::new(),
-            diagnostics: vec![Diagnostic::AplValid],
+            diagnostics: vec![D::APL_VALID],
         }
     }
 
@@ -674,7 +673,7 @@ mod tests {
             core_outcome: CoreOutcome::AplInvalid,
             relation_outcome: RelationOutcome::RelationNotEvaluated,
             failure_classes: vec![FailureClass::CarrierFailure],
-            diagnostics: vec![Diagnostic::CarrierInvalid],
+            diagnostics: vec![D::CARRIER_INVALID],
         }
     }
 
@@ -732,7 +731,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &right_carrier, &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
-        assert!(out.diagnostics.contains(&Diagnostic::AplPairLeftInvalid));
+        assert!(out.diagnostics.contains(&D::APL_PAIR_LEFT_INVALID));
     }
 
     #[test]
@@ -757,7 +756,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
-        assert!(out.diagnostics.contains(&Diagnostic::AplPairRightInvalid));
+        assert!(out.diagnostics.contains(&D::APL_PAIR_RIGHT_INVALID));
     }
 
     // ---- AC2: left aspects out of claim -------------------------------------
@@ -796,7 +795,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplRelationQueryLeftAspectsOutOfClaim));
+            .contains(&D::APL_RELATION_QUERY_LEFT_ASPECTS_OUT_OF_CLAIM));
     }
 
     // ---- AC3: right aspects out of claim ------------------------------------
@@ -834,7 +833,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplRelationQueryRightAspectsOutOfClaim));
+            .contains(&D::APL_RELATION_QUERY_RIGHT_ASPECTS_OUT_OF_CLAIM));
     }
 
     // ---- AC4: predicate mismatch --------------------------------------------
@@ -873,7 +872,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplRelationQueryPredicateMismatch));
+            .contains(&D::APL_RELATION_QUERY_PREDICATE_MISMATCH));
     }
 
     // ---- AC5: content type mismatch -----------------------------------------
@@ -904,7 +903,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplStatementContentTypeMismatch));
+            .contains(&D::APL_STATEMENT_CONTENT_TYPE_MISMATCH));
     }
 
     // ---- AC6: object shape mismatch -----------------------------------------
@@ -940,7 +939,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplStatementObjectShapeMismatch));
+            .contains(&D::APL_STATEMENT_OBJECT_SHAPE_MISMATCH));
     }
 
     // ---- AC7: same frame + identical aspects → SameFrameComparable ----------
@@ -968,10 +967,8 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::SameFrameComparable);
-        assert!(out.diagnostics.contains(&Diagnostic::AplSameFrame));
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplSameFrameAspectMatch));
+        assert!(out.diagnostics.contains(&D::APL_SAME_FRAME));
+        assert!(out.diagnostics.contains(&D::APL_SAME_FRAME_ASPECT_MATCH));
     }
 
     // ---- AC8: same frame + different aspect sets → Incomparable -------------
@@ -1019,9 +1016,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplSameFrameAspectMismatch));
+        assert!(out.diagnostics.contains(&D::APL_SAME_FRAME_ASPECT_MISMATCH));
     }
 
     // ---- AC9: cross-frame + no bridges → Incomparable + AplBridgeNotFound ---
@@ -1051,8 +1046,8 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out.diagnostics.contains(&Diagnostic::AplCrossFrame));
-        assert!(out.diagnostics.contains(&Diagnostic::AplBridgeNotFound));
+        assert!(out.diagnostics.contains(&D::APL_CROSS_FRAME));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_NOT_FOUND));
     }
 
     // ---- AC10: cross-frame + bridge with mismatched source frame -----------
@@ -1097,9 +1092,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplBridgeFrameMismatch));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_FRAME_MISMATCH));
     }
 
     // ---- AC11: cross-frame + bridge scope mismatch --------------------------
@@ -1143,9 +1136,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplBridgeScopeMismatch));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_SCOPE_MISMATCH));
     }
 
     // ---- AC12: cross-frame + valid bridge → BridgedComparable ---------------
@@ -1188,7 +1179,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::BridgedComparable);
-        assert!(out.diagnostics.contains(&Diagnostic::AplBridgeApplicable));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_APPLICABLE));
     }
 
     // ---- AC13: structurally-invalid bridge is ignored -----------------------
@@ -1231,7 +1222,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out.diagnostics.contains(&Diagnostic::AplBridgeInvalid));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_INVALID));
     }
 
     // ---- AC15: bridge direction is enforced ---------------------------------
@@ -1275,9 +1266,7 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out
-            .diagnostics
-            .contains(&Diagnostic::AplBridgeFrameMismatch));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_FRAME_MISMATCH));
     }
 
     // ---- AC16: supplied bridges participate in the pipeline ----------------
@@ -1339,8 +1328,8 @@ mod tests {
             _lf: &Frame,
             _rf: &Frame,
             _q: &RelationQuery,
-        ) -> Result<(), Vec<Diagnostic>> {
-            Err(vec![Diagnostic::AplAiEvalRelationTypeInvalid])
+        ) -> Result<(), Vec<DiagnosticCode>> {
+            Err(vec![D::APL_AI_EVAL_RELATION_TYPE_INVALID])
         }
     }
 
@@ -1370,7 +1359,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplAiEvalRelationTypeInvalid));
+            .contains(&D::APL_AI_EVAL_RELATION_TYPE_INVALID));
     }
 
     #[test]
@@ -1397,10 +1386,8 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, Some(&profile));
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(!out.diagnostics.contains(&Diagnostic::AplSameFrame));
-        assert!(!out
-            .diagnostics
-            .contains(&Diagnostic::AplSameFrameAspectMatch));
+        assert!(!out.diagnostics.contains(&D::APL_SAME_FRAME));
+        assert!(!out.diagnostics.contains(&D::APL_SAME_FRAME_ASPECT_MATCH));
     }
 
     #[test]
@@ -1429,8 +1416,8 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, Some(&profile));
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(!out.diagnostics.contains(&Diagnostic::AplCrossFrame));
-        assert!(!out.diagnostics.contains(&Diagnostic::AplBridgeNotFound));
+        assert!(!out.diagnostics.contains(&D::APL_CROSS_FRAME));
+        assert!(!out.diagnostics.contains(&D::APL_BRIDGE_NOT_FOUND));
     }
 
     // ---- AC20+AC21: Prevalidated path + profile gate is fail-closed ---------
@@ -1465,8 +1452,8 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplAiEvalRelationTypeInvalid));
-        assert!(!out.diagnostics.contains(&Diagnostic::AplSameFrame));
+            .contains(&D::APL_AI_EVAL_RELATION_TYPE_INVALID));
+        assert!(!out.diagnostics.contains(&D::APL_SAME_FRAME));
     }
 
     // ---- AC14: The Two MMLU Scores adversarial demo -------------------------
@@ -1499,8 +1486,8 @@ mod tests {
         };
         let out = evaluate_relation(input, &invalid_carrier(), &frames, &bridges, None);
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
-        assert!(out.diagnostics.contains(&Diagnostic::AplCrossFrame));
-        assert!(out.diagnostics.contains(&Diagnostic::AplBridgeNotFound));
+        assert!(out.diagnostics.contains(&D::APL_CROSS_FRAME));
+        assert!(out.diagnostics.contains(&D::APL_BRIDGE_NOT_FOUND));
     }
 
     // ---- Prevalidated compile-time guard (AC20 doc test support) -----------
@@ -1914,8 +1901,8 @@ mod tests {
                 _left_frame: &Frame,
                 _right_frame: &Frame,
                 _query: &RelationQuery,
-            ) -> Result<(), Vec<Diagnostic>> {
-                Err(vec![Diagnostic::AplAiEvalBridgeKindInvalid])
+            ) -> Result<(), Vec<DiagnosticCode>> {
+                Err(vec![D::APL_AI_EVAL_BRIDGE_KIND_INVALID])
             }
         }
 
@@ -1968,6 +1955,6 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&Diagnostic::AplAiEvalBridgeKindInvalid));
+            .contains(&D::APL_AI_EVAL_BRIDGE_KIND_INVALID));
     }
 }

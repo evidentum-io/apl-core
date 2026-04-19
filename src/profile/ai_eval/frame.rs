@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use crate::core::frame::{Frame, StringOrObject};
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::{self as D, DiagnosticCode};
 use crate::failure::FailureClass;
 use crate::profile::trait_def::{ProfileCheckResult, ProfileFailure};
 
@@ -25,12 +25,12 @@ pub fn check_frame(frame: &Frame) -> ProfileCheckResult {
         _ => {
             return Err(profile_err(
                 FailureClass::FrameFailure,
-                vec![Diagnostic::AplFrameKernelMissing],
+                vec![D::APL_FRAME_KERNEL_MISSING],
             ));
         }
     };
-    require_non_empty_string(proc_obj, "runner_id", Diagnostic::AplFrameKernelMissing)?;
-    require_non_empty_string(proc_obj, "grader_id", Diagnostic::AplFrameKernelMissing)?;
+    require_non_empty_string(proc_obj, "runner_id", D::APL_FRAME_KERNEL_MISSING)?;
+    require_non_empty_string(proc_obj, "grader_id", D::APL_FRAME_KERNEL_MISSING)?;
 
     // §5.3 — scope MUST be an object with benchmark_id, benchmark_variant, dataset_split.
     let scope_obj = match &frame.scope {
@@ -38,27 +38,19 @@ pub fn check_frame(frame: &Frame) -> ProfileCheckResult {
         _ => {
             return Err(profile_err(
                 FailureClass::FrameFailure,
-                vec![Diagnostic::AplFrameScopeOrResolutionMissing],
+                vec![D::APL_FRAME_SCOPE_OR_RESOLUTION_MISSING],
             ));
         }
     };
-    require_non_empty_string(scope_obj, "benchmark_id", Diagnostic::AplFrameKernelMissing)?;
-    require_non_empty_string(
-        scope_obj,
-        "benchmark_variant",
-        Diagnostic::AplFrameKernelMissing,
-    )?;
-    require_non_empty_string(
-        scope_obj,
-        "dataset_split",
-        Diagnostic::AplFrameKernelMissing,
-    )?;
+    require_non_empty_string(scope_obj, "benchmark_id", D::APL_FRAME_KERNEL_MISSING)?;
+    require_non_empty_string(scope_obj, "benchmark_variant", D::APL_FRAME_KERNEL_MISSING)?;
+    require_non_empty_string(scope_obj, "dataset_split", D::APL_FRAME_KERNEL_MISSING)?;
 
     // §5.4 — aspect cardinality: exactly one element required.
     if frame.aspect.len() != 1 {
         return Err(profile_err(
             FailureClass::FrameFailure,
-            vec![Diagnostic::AplFrameAspectInvalid],
+            vec![D::APL_FRAME_ASPECT_INVALID],
         ));
     }
     // §5.4 — allowed aspect values.
@@ -66,7 +58,7 @@ pub fn check_frame(frame: &Frame) -> ProfileCheckResult {
     if !AI_EVAL_ALLOWED_ASPECTS.contains(&aspect) {
         return Err(profile_err(
             FailureClass::FrameFailure,
-            vec![Diagnostic::AplFrameAspectInvalid],
+            vec![D::APL_FRAME_ASPECT_INVALID],
         ));
     }
 
@@ -75,7 +67,7 @@ pub fn check_frame(frame: &Frame) -> ProfileCheckResult {
         if !frame.exclusions.iter().any(|e| e == *marker) {
             return Err(profile_err(
                 FailureClass::FrameFailure,
-                vec![Diagnostic::AplFrameExclusionsInvalid],
+                vec![D::APL_FRAME_EXCLUSIONS_INVALID],
             ));
         }
     }
@@ -91,7 +83,7 @@ pub fn check_frame(frame: &Frame) -> ProfileCheckResult {
 fn require_non_empty_string(
     obj: &serde_json::Map<String, Value>,
     key: &str,
-    diagnostic: Diagnostic,
+    diagnostic: DiagnosticCode,
 ) -> ProfileCheckResult {
     let s = obj
         .get(key)
@@ -104,7 +96,7 @@ fn require_non_empty_string(
 }
 
 /// Construct a `ProfileFailure` from a failure class and diagnostic list.
-fn profile_err(failure_class: FailureClass, diagnostics: Vec<Diagnostic>) -> ProfileFailure {
+fn profile_err(failure_class: FailureClass, diagnostics: Vec<DiagnosticCode>) -> ProfileFailure {
     ProfileFailure {
         failure_class,
         diagnostics,
@@ -177,7 +169,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // AC10: procedure missing runner_id → FrameFailure + AplFrameKernelMissing.
@@ -202,7 +194,7 @@ mod frame_tests {
         });
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // AC10: procedure missing grader_id.
@@ -227,7 +219,7 @@ mod frame_tests {
         });
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // scope missing dataset_split → FrameFailure.
@@ -252,7 +244,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // AC11: missing required exclusion markers.
@@ -274,9 +266,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err
-            .diagnostics
-            .contains(&Diagnostic::AplFrameExclusionsInvalid));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_EXCLUSIONS_INVALID));
     }
 
     // AC11: all three exclusions present but none others needed.
@@ -307,7 +297,7 @@ mod frame_tests {
         });
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameAspectInvalid));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_ASPECT_INVALID));
     }
 
     // scope is not an object → FrameFailure + AplFrameScopeOrResolutionMissing.
@@ -331,7 +321,7 @@ mod frame_tests {
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
         assert!(err
             .diagnostics
-            .contains(&Diagnostic::AplFrameScopeOrResolutionMissing));
+            .contains(&D::APL_FRAME_SCOPE_OR_RESOLUTION_MISSING));
     }
 
     // scope missing benchmark_variant → FrameFailure + AplFrameKernelMissing.
@@ -356,7 +346,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // aspect.len() != 1 (multiple) → FrameFailure + AplFrameAspectInvalid.
@@ -382,7 +372,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameAspectInvalid));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_ASPECT_INVALID));
     }
 
     // runner_id is an empty string → FrameFailure + AplFrameKernelMissing.
@@ -408,7 +398,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // grader_id is an empty string → FrameFailure + AplFrameKernelMissing.
@@ -434,7 +424,7 @@ mod frame_tests {
         let f = Frame::parse(&v).expect("core parse must succeed");
         let err = AiEvalProfile.check_frame(&f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&Diagnostic::AplFrameKernelMissing));
+        assert!(err.diagnostics.contains(&D::APL_FRAME_KERNEL_MISSING));
     }
 
     // §8.5 — reference frames for all four reference benchmark families.

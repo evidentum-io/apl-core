@@ -35,7 +35,7 @@ use crate::core::bridge::Bridge;
 use crate::core::claim::Claim;
 use crate::core::frame::Frame;
 use crate::core::relation::RelationQuery;
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::DiagnosticCode;
 use crate::failure::FailureClass;
 
 /// Error type returned by a failing profile hook.
@@ -49,7 +49,7 @@ pub struct ProfileFailure {
     /// The failure class this profile violation maps to.
     pub failure_class: FailureClass,
     /// Ordered diagnostic codes for this failure.
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<DiagnosticCode>,
 }
 
 /// Result type for single-receipt profile hook invocations.
@@ -63,7 +63,7 @@ pub type ProfileCheckResult = Result<(), ProfileFailure>;
 /// On rejection the profile returns a list of diagnostics to append to
 /// `PairwiseOutput.diagnostics`. No failure class is needed because the
 /// relation-layer output does not have a `failure_classes` field.
-pub type BridgeCheckResult = Result<(), Vec<Diagnostic>>;
+pub type BridgeCheckResult = Result<(), Vec<DiagnosticCode>>;
 
 /// Pluggable vertical-profile check hooks per `apl-spec.md §17` and `§9.10`.
 ///
@@ -243,7 +243,7 @@ mod tests {
         fn check_claim(&self, _claim: &Claim) -> ProfileCheckResult {
             Err(ProfileFailure {
                 failure_class: FailureClass::ClaimStructureFailure,
-                diagnostics: vec![Diagnostic::AplClaimKindUnsupported],
+                diagnostics: vec![crate::diagnostics::APL_CLAIM_KIND_UNSUPPORTED],
             })
         }
     }
@@ -258,7 +258,7 @@ mod tests {
         fn cross_check(&self, _claim: &Claim, _frame: &Frame) -> ProfileCheckResult {
             Err(ProfileFailure {
                 failure_class: FailureClass::SemanticLinkageFailure,
-                diagnostics: vec![Diagnostic::AplAspectRefOutOfFrame],
+                diagnostics: vec![crate::diagnostics::APL_ASPECT_REF_OUT_OF_FRAME],
             })
         }
     }
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
         assert!(err
             .diagnostics
-            .contains(&Diagnostic::AplClaimKindUnsupported));
+            .contains(&crate::diagnostics::APL_CLAIM_KIND_UNSUPPORTED));
     }
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
     fn profile_failure_clone_and_eq() {
         let f = ProfileFailure {
             failure_class: FailureClass::FrameFailure,
-            diagnostics: vec![Diagnostic::AplFrameKernelMissing],
+            diagnostics: vec![crate::diagnostics::APL_FRAME_KERNEL_MISSING],
         };
         assert_eq!(f.clone(), f);
     }

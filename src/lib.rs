@@ -55,15 +55,14 @@
 pub mod core;
 pub mod profile;
 
-mod diagnostics;
+pub mod diagnostics;
 mod error;
 mod failure;
 mod prelude;
 
 // Re-exports
-pub use diagnostics::Diagnostic;
+pub use diagnostics::DiagnosticCode;
 pub use error::{AplError, AplResult};
 pub use failure::FailureClass;
 #[allow(unused_imports)]
-// prelude is currently empty; items will be added in API-1
 pub use prelude::*;
