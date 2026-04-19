@@ -23,12 +23,19 @@
 //! or uses an unrecognized one — AI-Eval vectors are expected to require the
 //! profile.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::OnceLock};
 
 use apl_ai_eval::AiEvalProfile;
 use apl_core::prelude::*;
 use serde::Deserialize;
 use serde_json::Value;
+
+fn setup() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        apl_ai_eval::register();
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Structs
@@ -199,6 +206,7 @@ fn substitute_hash_placeholders(v: &mut Value, frames: &[Value]) {
 // ---------------------------------------------------------------------------
 
 fn run_single_vector(path: &Path) {
+    setup();
     let src = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
     let mut v: SingleVector = serde_json::from_str(&src)
@@ -304,6 +312,7 @@ fn assert_single_expected(name: &str, out: &VerifierOutput, expected: &SingleExp
 // ---------------------------------------------------------------------------
 
 fn run_pairwise_vector(path: &Path) {
+    setup();
     let src = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
     let mut v: PairwiseVector = serde_json::from_str(&src)
@@ -483,6 +492,7 @@ fn all_pairwise_vectors_ai_eval() {
 /// bridge is supplied.
 #[test]
 fn two_mmlu_scores_incomparable_with_ai_eval_profile() {
+    setup();
     let frame_a = serde_json::json!({
         "version": "0.1",
         "observer": { "id": "acme-eval-lab" },

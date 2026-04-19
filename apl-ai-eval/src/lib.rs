@@ -7,5 +7,7 @@ pub mod claim;
 pub mod diagnostics;
 pub mod frame;
 pub mod profile;
+pub mod register;
 
 pub use profile::AiEvalProfile;
+pub use register::register;
