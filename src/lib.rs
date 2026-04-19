@@ -148,6 +148,7 @@ pub use core::resolver::{
 
 // Verification entry points
 pub use core::evaluate::{evaluate_relation, PairwiseInput, ReceiptInput};
+pub use core::verified::VerifiedReceipt;
 pub use core::verify::verify_receipt;
 
 // Output types

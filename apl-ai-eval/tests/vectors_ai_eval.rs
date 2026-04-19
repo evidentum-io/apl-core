@@ -230,11 +230,11 @@ fn run_single_vector(path: &Path) {
     let out = match v.carrier.as_deref() {
         None | Some("valid") => {
             let carrier = MockCarrier { metadata };
-            verify_receipt(b"", &carrier, &frames, &bridges_resolver, Some(&profile))
+            verify_receipt(b"", &carrier, &frames, &bridges_resolver, Some(&profile)).0
         }
         Some("invalid") => {
             let carrier = AlwaysInvalidCarrier;
-            verify_receipt(b"", &carrier, &frames, &bridges_resolver, Some(&profile))
+            verify_receipt(b"", &carrier, &frames, &bridges_resolver, Some(&profile)).0
         }
         Some(other) => panic!("[{}] unknown carrier value: {other}", v.name),
     };

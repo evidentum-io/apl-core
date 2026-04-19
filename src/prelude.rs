@@ -32,6 +32,7 @@ pub use crate::core::resolver::{
 
 // Entry points
 pub use crate::core::evaluate::{evaluate_relation, PairwiseInput, ReceiptInput};
+pub use crate::core::verified::VerifiedReceipt;
 pub use crate::core::verify::verify_receipt;
 
 // Outputs

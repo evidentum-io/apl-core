@@ -267,7 +267,7 @@ fn call_single(
     v: &SingleVector,
 ) -> VerifierOutput {
     match v.profile.as_deref() {
-        None => verify_receipt(b"", carrier, frames, bridges, None),
+        None => verify_receipt(b"", carrier, frames, bridges, None).0,
         Some(p) => panic!(
             "[{}] core harness only handles profile=null; got '{p}'. AI-Eval vectors must live in apl-ai-eval/tests/",
             v.name
