@@ -14,3 +14,4 @@ pub mod transformation;
 pub mod verify;
 
 pub use hash::{parse_hash_string, Hash, ParseError, Reference};
+pub use jcs::{canonical_bytes, canonical_equal, canonical_equal_after_strip, canonical_hash};
