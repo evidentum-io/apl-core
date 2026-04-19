@@ -166,7 +166,10 @@ pub enum ClaimParseError {
     /// malformed (`§10.2`).
     StatementInvalid,
 
-    /// `claim.statement.predicate` is absent or an empty string (`§10.2`).
+    /// `claim.statement.predicate` field is absent (`§10.2`). An empty-string
+    /// or non-string predicate is reported as [`StatementInvalid`] instead.
+    ///
+    /// [`StatementInvalid`]: ClaimParseError::StatementInvalid
     PredicateMissing,
 
     /// `claim.statement.content` field is absent (`§10.2`).
