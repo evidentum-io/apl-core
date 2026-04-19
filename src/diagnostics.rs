@@ -106,6 +106,7 @@ impl DiagnosticCode {
                 | "apl-bridge-scope-mismatch"
                 | "apl-bridge-applicable"
                 | "apl-transformation-declared"
+                | "apl-pair-prevalidated-inconsistent"
         )
     }
 }
@@ -358,6 +359,11 @@ pub const APL_BRIDGE_APPLICABLE: DiagnosticCode = DiagnosticCode::new("apl-bridg
 /// Transformation is declared in the bridge artifact for this pair.
 pub const APL_TRANSFORMATION_DECLARED: DiagnosticCode =
     DiagnosticCode::new("apl-transformation-declared");
+/// A `Prevalidated` triple failed internal consistency checks: frame hash does
+/// not match `claim.frame_ref.hash`, `output.core_outcome` is not `AplValid`,
+/// or `claim.aspect_refs` contains a value not present in `frame.aspect`.
+pub const APL_PAIR_PREVALIDATED_INCONSISTENT: DiagnosticCode =
+    DiagnosticCode::new("apl-pair-prevalidated-inconsistent");
 
 // ---------------------------------------------------------------------------
 // Tests
