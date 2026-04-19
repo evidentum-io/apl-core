@@ -12,6 +12,7 @@ pub mod receipt;
 pub mod relation;
 pub mod resolver;
 pub mod transformation;
+pub mod verified;
 pub mod verify;
 
 pub use bridge::{Bridge, BridgeParseError, ComparisonScope};
@@ -28,4 +29,5 @@ pub use resolver::{
     InMemoryFrameResolver,
 };
 pub use transformation::{Transformation, TransformationParseError};
+pub use verified::VerifiedReceipt;
 pub use verify::verify_receipt;

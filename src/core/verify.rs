@@ -21,6 +21,7 @@ use crate::core::frame::{Frame, FrameParseError};
 use crate::core::jcs::canonical_hash;
 use crate::core::output::{CoreOutcome, RelationOutcome, VerifierOutput};
 use crate::core::resolver::{BridgeResolver, FrameResolution, FrameResolver};
+use crate::core::verified::VerifiedReceipt;
 use crate::diagnostics::{self as D, DiagnosticCode};
 use crate::failure::FailureClass;
 use crate::profile::trait_def::Profile;
@@ -46,9 +47,11 @@ use crate::profile::trait_def::Profile;
 ///
 /// # Returns
 ///
-/// A [`VerifierOutput`] whose `relation_outcome` is always
-/// `RelationNotEvaluated` (single-receipt mode). Failure classes and
-/// diagnostics are populated per `§10` and `§12.3`.
+/// A tuple `(VerifierOutput, Option<VerifiedReceipt>)`. The second element is
+/// `Some` only when `core_outcome == AplValid`; in that case, the
+/// [`VerifiedReceipt`] token is the only way to construct a
+/// `ReceiptInput::Prevalidated` for use with `evaluate_relation`. When
+/// `core_outcome == AplInvalid`, the second element is `None`.
 ///
 /// # Purity
 ///
@@ -57,158 +60,24 @@ pub fn verify_receipt(
     receipt_bytes: &[u8],
     carrier: &dyn CarrierVerifier,
     frames: &dyn FrameResolver,
-    _bridges: &dyn BridgeResolver,
+    bridges: &dyn BridgeResolver,
     profile: Option<&dyn Profile>,
-) -> VerifierOutput {
-    let mut diagnostics: Vec<DiagnosticCode> = Vec::new();
+) -> (VerifierOutput, Option<VerifiedReceipt>) {
+    let (output, claim_opt, frame_opt) =
+        verify_receipt_with_claim_and_frame(receipt_bytes, carrier, frames, bridges, profile);
 
-    // ========== STEP 1 — carrier verification (§11.1, §15.1) ==========
-    let carrier_result = carrier.verify_carrier(receipt_bytes);
-    let metadata = match carrier_result {
-        CarrierOutcome::Invalid { .. } => {
-            return mk_invalid(
-                FailureClass::CarrierFailure,
-                vec![D::CARRIER_INVALID, D::FAILURE_CARRIER],
-            );
-        }
-        CarrierOutcome::Valid { metadata, .. } => {
-            diagnostics.push(D::CARRIER_VALID);
-            metadata
-        }
-    };
-
-    // ========== STEP 2 — extract metadata.apl (§11.2, §15.2) ==========
-    let apl_v = match metadata.as_object().and_then(|m| m.get("apl")) {
-        Some(v) => v.clone(),
-        None => {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                FailureClass::ClaimStructureFailure,
-                vec![D::APL_MISSING, D::FAILURE_CLAIM_STRUCTURE],
-            );
-        }
-    };
-    diagnostics.push(D::APL_PRESENT);
-
-    // ========== STEPS 3+4 — claim structure & frame_ref.hash (§11.3, §11.4) ==========
-    let claim = match Claim::parse(&apl_v) {
-        Ok(c) => c,
-        Err(e) => {
-            let (fc, diag_tail) = map_claim_parse_error(e);
-            return mk_invalid_with_prefix(diagnostics, fc, diag_tail);
-        }
-    };
-    diagnostics.push(D::APL_FRAME_BOUND);
-
-    // ========== STEP 5 — resolve frame (§11.5, §16.2) ==========
-    let frame_value = match frames.resolve(&claim.frame_ref.hash) {
-        FrameResolution::Found(v) => v,
-        FrameResolution::NotFound => {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                FailureClass::FrameFailure,
-                vec![D::APL_FRAME_MISSING, D::FAILURE_FRAME],
-            );
-        }
-        FrameResolution::ResolverError(_reason) => {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                FailureClass::FrameFailure,
-                vec![D::APL_FRAME_UNRESOLVED, D::FAILURE_FRAME],
-            );
-        }
-    };
-
-    // ========== STEP 6 — hash match (§11.6, §9.5) ==========
-    let actual = canonical_hash(&frame_value);
-    if actual != claim.frame_ref.hash {
-        return mk_invalid_with_prefix(
-            diagnostics,
-            FailureClass::FrameFailure,
-            vec![D::APL_FRAME_HASH_MISMATCH, D::FAILURE_FRAME],
-        );
-    }
-
-    // ========== STEP 7 — parse frame + kernel check (§11.7, §10.4) ==========
-    let frame = match Frame::parse(&frame_value) {
-        Ok(f) => f,
-        Err(e) => {
-            let (fc, diag_tail) = map_frame_parse_error(e);
-            return mk_invalid_with_prefix(diagnostics, fc, diag_tail);
-        }
-    };
-
-    // ========== STEP 8 — aspect linkage (§11.8, §9.7) ==========
-    for aspect in &claim.claim.aspect_refs {
-        if !frame.has_aspect(aspect) {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                FailureClass::SemanticLinkageFailure,
-                vec![D::APL_ASPECT_REF_OUT_OF_FRAME, D::FAILURE_SEMANTIC_LINKAGE],
-            );
-        }
-    }
-
-    // ========== Profile hooks (§9.10) ==========
-    // Order: check_claim → check_frame → cross_check.
-    // Each short-circuits on Err; subsequent hooks are not invoked.
-    if let Some(p) = profile {
-        // STEP 8.5 — claim-alone check
-        if let Err(profile_failure) = p.check_claim(&claim) {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                profile_failure.failure_class,
-                profile_failure.diagnostics,
-            );
-        }
-        // STEP 8.6 — frame-alone check
-        if let Err(profile_failure) = p.check_frame(&frame) {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                profile_failure.failure_class,
-                profile_failure.diagnostics,
-            );
-        }
-        // STEP 8.7 — joint claim+frame check
-        if let Err(profile_failure) = p.cross_check(&claim, &frame) {
-            return mk_invalid_with_prefix(
-                diagnostics,
-                profile_failure.failure_class,
-                profile_failure.diagnostics,
-            );
-        }
-    }
-
-    // ========== STEP 9 — relation-layer structural conformance (§11.9) ==========
-    // Already enforced inside Claim::parse; no extra work here.
-
-    // ========== STEP 10 — core outcome (§11.10) ==========
-    diagnostics.push(D::APL_VALID);
-
-    // ========== STEP 11 — cross-frame detection (§11.11, §5.9) ==========
-    if claim.is_cross_frame() {
-        diagnostics.push(D::CROSS_FRAME);
+    let token = if output.core_outcome == CoreOutcome::AplValid {
+        // Both claim and frame are guaranteed Some when core_outcome is AplValid:
+        // the 14-step algorithm only reaches step 10 after claim and frame have
+        // both been successfully parsed.
+        claim_opt
+            .zip(frame_opt)
+            .map(|(claim, frame)| VerifiedReceipt::new(output.clone(), claim, frame))
     } else {
-        diagnostics.push(D::SAME_FRAME);
-    }
+        None
+    };
 
-    // ========== STEP 12 — bridge MAY be checked (§11.12) ==========
-    // Single-receipt mode does not evaluate bridge applicability.
-
-    // ========== STEP 13 — transformation declaration (§11.13, §8.3) ==========
-    if claim.transformation_refs.is_some() {
-        diagnostics.push(D::TRANSFORMATION_DECLARED);
-    } else {
-        diagnostics.push(D::TRANSFORMATION_MISSING);
-    }
-
-    // ========== STEP 14 — return (§11.14) ==========
-    VerifierOutput {
-        core_outcome: CoreOutcome::AplValid,
-        relation_outcome: RelationOutcome::RelationNotEvaluated,
-        failure_classes: Vec::new(),
-        diagnostics,
-    }
+    (output, token)
 }
 
 // ---------------------------------------------------------------------------
@@ -639,7 +508,7 @@ mod tests {
         let carrier = stub_invalid();
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let out = verify_receipt(&[], &carrier, &frames, &bridges, None);
+        let (out, _token) = verify_receipt(&[], &carrier, &frames, &bridges, None);
 
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
         assert_eq!(out.failure_classes, vec![FailureClass::CarrierFailure]);
@@ -657,7 +526,7 @@ mod tests {
         let carrier = stub_valid(json!({}));
         let frames = InMemoryFrameResolver::new();
         let bridges = InMemoryBridgeResolver::new();
-        let out = verify_receipt(&[], &carrier, &frames, &bridges, None);
+        let (out, _token) = verify_receipt(&[], &carrier, &frames, &bridges, None);
 
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
         assert_eq!(
@@ -682,7 +551,7 @@ mod tests {
             }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -708,7 +577,7 @@ mod tests {
             "frame_ref": { "hash": h(0xaa) }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -742,7 +611,8 @@ mod tests {
             "frame_ref": { "hash": wrong_hash_str }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_HASH_MISMATCH));
     }
@@ -773,7 +643,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
@@ -798,7 +669,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(
             out.failure_classes,
             vec![FailureClass::SemanticLinkageFailure]
@@ -827,7 +699,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
 
         assert_eq!(out.core_outcome, CoreOutcome::AplValid);
         assert_eq!(out.relation_outcome, RelationOutcome::RelationNotEvaluated);
@@ -866,7 +739,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert!(out.diagnostics.contains(&diag::CROSS_FRAME));
         assert!(!out.diagnostics.contains(&diag::SAME_FRAME));
     }
@@ -890,7 +764,8 @@ mod tests {
             "transformation_refs": [{ "hash": h(0x77) }]
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert!(out.diagnostics.contains(&diag::TRANSFORMATION_DECLARED));
         assert!(!out.diagnostics.contains(&diag::TRANSFORMATION_MISSING));
     }
@@ -900,7 +775,7 @@ mod tests {
     #[test]
     fn ac11_never_panics_on_garbage_metadata() {
         let carrier = stub_valid(json!("scalar-value"));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             b"any-bytes",
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -914,7 +789,7 @@ mod tests {
     #[test]
     fn ac11_never_panics_on_null_metadata() {
         let carrier = stub_valid(json!(null));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -926,7 +801,7 @@ mod tests {
 
     #[test]
     fn ac11_never_panics_on_empty_bytes() {
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &stub_invalid(),
             &InMemoryFrameResolver::new(),
@@ -954,8 +829,10 @@ mod tests {
         });
         let carrier = stub_valid(json!({ "apl": apl }));
 
-        let o1 = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
-        let o2 = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (o1, _t1) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (o2, _t2) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(o1, o2);
     }
 
@@ -976,7 +853,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
 
         let diags = &out.diagnostics;
         let pos = |d: DiagnosticCode| diags.iter().position(|x| *x == d).expect("present");
@@ -1021,7 +899,7 @@ mod tests {
         });
         let carrier = stub_valid(json!({ "apl": apl }));
         let p = AlwaysFailClaim;
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &frames,
@@ -1074,7 +952,7 @@ mod tests {
         let carrier = stub_valid(json!({ "apl": apl }));
         let bridges = InMemoryBridgeResolver::new();
         let p = CrossOnlyReject;
-        let out = verify_receipt(&[], &carrier, &frames, &bridges, Some(&p));
+        let (out, _token) = verify_receipt(&[], &carrier, &frames, &bridges, Some(&p));
 
         assert_eq!(out.core_outcome, CoreOutcome::AplInvalid);
         assert_eq!(
@@ -1142,7 +1020,7 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &frames,
@@ -1208,7 +1086,7 @@ mod tests {
             "frame_ref": { "hash": frame_hash.to_string() }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &frames,
@@ -1238,7 +1116,7 @@ mod tests {
             "frame_ref": { "hash": h(0x11) }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1277,7 +1155,7 @@ mod tests {
             "frame_ref": { "hash": h(0xbb) }
         });
         let carrier = stub_valid(json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &ErroringResolver,
@@ -1317,7 +1195,7 @@ mod tests {
         let carrier = stub_valid(json!({ "apl": apl }));
         let p = AcceptAll;
         assert_eq!(p.id(), "accept-all-verify");
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &frames,
@@ -1348,7 +1226,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1371,7 +1249,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1393,7 +1271,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1416,7 +1294,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1443,7 +1321,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1471,7 +1349,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1498,7 +1376,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1526,7 +1404,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1554,7 +1432,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1582,7 +1460,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1610,7 +1488,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1637,7 +1515,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1665,7 +1543,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1692,7 +1570,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1720,7 +1598,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1748,7 +1626,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1776,7 +1654,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1799,7 +1677,7 @@ mod tests {
             "frame_ref": "not-a-ref-object"
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1825,7 +1703,7 @@ mod tests {
             "frame_ref": { "hash": h(0x01) }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1849,7 +1727,7 @@ mod tests {
             "bridge_refs": ["not-a-ref"]
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1873,7 +1751,7 @@ mod tests {
             "transformation_refs": ["not-a-ref"]
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &InMemoryFrameResolver::new(),
@@ -1908,7 +1786,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_KERNEL_MISSING));
     }
@@ -1934,7 +1813,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_VERSION_MISSING));
     }
@@ -1961,7 +1841,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
@@ -1989,7 +1870,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_OBSERVER_INVALID));
     }
@@ -2016,7 +1898,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_ASPECT_INVALID));
     }
@@ -2043,7 +1926,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
@@ -2072,7 +1956,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
@@ -2100,7 +1985,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out
             .diagnostics
@@ -2130,7 +2016,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_KERNEL_MISSING));
     }
@@ -2158,7 +2045,8 @@ mod tests {
             "frame_ref": { "hash": frame_hash }
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
-        let out = verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
+        let (out, _token) =
+            verify_receipt(&[], &carrier, &frames, &InMemoryBridgeResolver::new(), None);
         assert_eq!(out.failure_classes, vec![FailureClass::FrameFailure]);
         assert!(out.diagnostics.contains(&diag::APL_FRAME_KERNEL_MISSING));
     }
@@ -2196,7 +2084,7 @@ mod tests {
         });
         let carrier = stub_valid(serde_json::json!({ "apl": apl }));
         let p = FrameRejectProfile;
-        let out = verify_receipt(
+        let (out, _token) = verify_receipt(
             &[],
             &carrier,
             &frames,
