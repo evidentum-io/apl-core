@@ -1,0 +1,50 @@
+{
+  "name": "valid-observation",
+  "description": "Canonical AI-Eval observation from apl-spec.md §14.2 — a minimal core-valid receipt with a single accuracy aspect, score predicate, and a properly formed frame.",
+  "source": "apl-spec.md §14.2",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "model:acme-gpt-7b-build-42"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "predicate": "score",
+        "content": {
+          "benchmark": "MMLU",
+          "value": 0.781,
+          "unit": "fraction"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>",
+      "resolver_hint": "https://registry.example/frames/ai-eval/mmlu-v1.json"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "procedure": "benchmark-run",
+      "aspect": ["accuracy"],
+      "scope": "mmlu/dev",
+      "invariance": ["JSON serialization of score object"],
+      "exclusions": [
+        "no claim about out-of-distribution behavior",
+        "no claim about deployment safety"
+      ]
+    }
+  ],
+  "bridges": [],
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-valid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": [],
+    "diagnostics_contains": ["carrier-valid", "apl-present", "apl-valid"],
+    "diagnostics_absent": []
+  }
+}

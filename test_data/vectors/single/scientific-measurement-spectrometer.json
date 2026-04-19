@@ -1,0 +1,68 @@
+{
+  "name": "scientific-measurement-spectrometer",
+  "description": "Secondary-domain vector from apl-kernel-stress-test.md §2.1 — an ICP-MS spectrometer concentration measurement. Demonstrates that the core frame kernel works for scientific measurement (both procedure and instrument present, scope and resolution present).",
+  "source": "apl-kernel-stress-test.md §2.1",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "sample:water-batch-042-lead"
+      },
+      "aspect_refs": ["compound-concentration"],
+      "statement": {
+        "predicate": "measured-concentration",
+        "content": {
+          "analyte": "lead",
+          "value": 0.007,
+          "unit": "ppm",
+          "below_loq": false
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": {
+        "lab": "acme-water-lab",
+        "operator_role": "batch-runner"
+      },
+      "procedure": {
+        "protocol_id": "trace-lead-assay-v3",
+        "calibration_id": "cal-2026-04-17"
+      },
+      "instrument": {
+        "instrument_id": "icp-ms-07"
+      },
+      "aspect": ["compound-concentration"],
+      "scope": {
+        "sample_matrix": "water",
+        "analyte": "lead",
+        "batch": "042"
+      },
+      "resolution": {
+        "limit_of_quantification": "0.01-ppm"
+      },
+      "invariance": [
+        "unit-preserving-result-serialization"
+      ],
+      "exclusions": [
+        "no-claim-about-causality",
+        "no-claim-outside-declared-protocol"
+      ]
+    }
+  ],
+  "bridges": [],
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-valid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": [],
+    "diagnostics_contains": ["carrier-valid", "apl-present", "apl-valid"],
+    "diagnostics_absent": []
+  }
+}

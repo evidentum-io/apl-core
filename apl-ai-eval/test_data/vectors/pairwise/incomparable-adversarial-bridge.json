@@ -1,0 +1,147 @@
+{
+  "name": "incomparable-adversarial-bridge",
+  "description": "Adversarial bridge from apl-ai-eval-profile.md §11. The bridge claims runner-equivalence but source_frame has aspect 'accuracy' while target_frame has aspect 'judge-score' — an aspect family mismatch. The profile must reject this bridge and the pair must be incomparable.",
+  "source": "apl-ai-eval-profile.md §11",
+  "left": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "type": "model-build",
+          "id": "model:acme-gpt-7b-build-42",
+          "build_id": "42",
+          "artifact_digest": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+          "provider": "acme",
+          "model_family": "acme-gpt-7b"
+        },
+        "aspect_refs": ["accuracy"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark_id": "mmlu",
+            "metric_id": "accuracy",
+            "value": 0.781,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "right": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "type": "model-build",
+          "id": "model:acme-gpt-7b-build-44",
+          "build_id": "44",
+          "artifact_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "provider": "acme",
+          "model_family": "acme-gpt-7b"
+        },
+        "aspect_refs": ["judge-score"],
+        "statement": {
+          "predicate": "score",
+          "content": {
+            "benchmark_id": "mmlu",
+            "metric_id": "judge-score",
+            "value": 0.790,
+            "unit": "fraction"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:1>"
+      }
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "acme-eval-lab"
+      },
+      "procedure": {
+        "runner_id": "lm-eval-harness@0.4.2",
+        "grader_id": "exact-match-v1",
+        "prompt_protocol": "zero-shot-mcq-v1"
+      },
+      "aspect": ["accuracy"],
+      "scope": {
+        "benchmark_id": "mmlu",
+        "benchmark_variant": "default",
+        "dataset_split": "dev"
+      },
+      "invariance": ["score-object-serialization"],
+      "exclusions": [
+        "no-production-readiness-claim",
+        "no-deployment-safety-claim",
+        "no-out-of-scope-generalization-claim"
+      ]
+    },
+    {
+      "version": "0.1",
+      "observer": {
+        "id": "acme-eval-lab"
+      },
+      "procedure": {
+        "runner_id": "custom-runner@2.1",
+        "grader_id": "llm-judge-v3",
+        "prompt_protocol": "zero-shot-mcq-v1"
+      },
+      "aspect": ["judge-score"],
+      "scope": {
+        "benchmark_id": "mmlu",
+        "benchmark_variant": "default",
+        "dataset_split": "dev"
+      },
+      "invariance": ["score-object-serialization"],
+      "exclusions": [
+        "no-production-readiness-claim",
+        "no-deployment-safety-claim",
+        "no-out-of-scope-generalization-claim"
+      ]
+    }
+  ],
+  "bridges": [],
+  "supplied_bridges": [
+    {
+      "version": "0.1",
+      "bridge_kind": "runner-equivalence",
+      "source_frame": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "target_frame": {
+        "hash": "<FRAME_HASH:1>"
+      },
+      "comparison_scope": {
+        "source_aspects": ["accuracy"],
+        "target_aspects": ["judge-score"],
+        "relation_type": "score-delta"
+      },
+      "assumptions": [
+        "all MMLU results are interchangeable"
+      ],
+      "losses": []
+    }
+  ],
+  "query": {
+    "left_aspects": ["accuracy"],
+    "right_aspects": ["judge-score"],
+    "predicate": "score",
+    "relation_type": "score-delta"
+  },
+  "profile": "ai-eval",
+  "expected": {
+    "left_core": "apl-valid",
+    "right_core": "apl-valid",
+    "relation_outcome": "incomparable",
+    "diagnostics_contains": ["apl-ai-eval-bridge-aspect-family-mismatch"],
+    "diagnostics_absent": []
+  }
+}

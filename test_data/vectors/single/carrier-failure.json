@@ -1,0 +1,47 @@
+{
+  "name": "carrier-failure",
+  "description": "Receipt whose carrier verification fails. The AlwaysInvalidCarrier wrapper returns CarrierOutcome::Invalid. Core verifier must return apl-invalid + carrier-failure without evaluating APL content.",
+  "source": "fabricated — carrier layer returns invalid",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "model:acme-gpt-7b-build-42"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "predicate": "score",
+        "content": {
+          "benchmark": "MMLU",
+          "value": 0.781,
+          "unit": "fraction"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "procedure": "benchmark-run",
+      "aspect": ["accuracy"],
+      "scope": "mmlu/dev",
+      "invariance": ["JSON serialization of score object"],
+      "exclusions": ["no claim about deployment safety"]
+    }
+  ],
+  "bridges": [],
+  "carrier": "invalid",
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-invalid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": ["carrier-failure"],
+    "diagnostics_contains": ["carrier-invalid"],
+    "diagnostics_absent": ["carrier-valid", "apl-present", "apl-valid"]
+  }
+}

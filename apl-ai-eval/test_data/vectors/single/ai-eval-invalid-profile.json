@@ -1,0 +1,51 @@
+{
+  "name": "ai-eval-invalid-profile",
+  "description": "Claim that is core-valid but profile-invalid for AI-Eval, from apl-ai-eval-profile.md §12. The subject lacks type and artifact_digest; frame.procedure is a string (not an object with runner_id/grader_id); frame.scope is a string (not an object with benchmark_variant/dataset_split); frame.exclusions is missing required markers. Core-only would accept this (the Core kernel check passes); AI-Eval profile rejects it.",
+  "source": "apl-ai-eval-profile.md §12",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "model:acme-gpt-7b"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "predicate": "score",
+        "content": {
+          "benchmark_id": "mmlu",
+          "metric_id": "accuracy",
+          "value": 0.781,
+          "unit": "fraction"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "acme-eval-runner",
+      "procedure": "benchmark-run",
+      "aspect": ["accuracy"],
+      "scope": "mmlu",
+      "invariance": [
+        "score-object-serialization"
+      ],
+      "exclusions": [
+        "no-deployment-safety-claim"
+      ]
+    }
+  ],
+  "bridges": [],
+  "profile": "ai-eval",
+  "expected": {
+    "core_outcome": "apl-invalid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": [],
+    "diagnostics_contains": ["carrier-valid", "apl-present"],
+    "diagnostics_absent": ["apl-valid"]
+  }
+}

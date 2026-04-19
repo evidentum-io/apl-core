@@ -1,0 +1,36 @@
+{
+  "name": "invalid-frame-reference",
+  "description": "Receipt where frame_ref.hash is absent — the reference object fails structural validation at apl-spec.md §5.3. Core verifier must return apl-invalid + reference-failure.",
+  "source": "fabricated — frame_ref.hash missing",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "model:acme-gpt-7b-build-42"
+      },
+      "aspect_refs": ["accuracy"],
+      "statement": {
+        "predicate": "score",
+        "content": {
+          "benchmark": "MMLU",
+          "value": 0.781,
+          "unit": "fraction"
+        }
+      }
+    },
+    "frame_ref": {
+      "resolver_hint": "https://registry.example/frames/ai-eval/mmlu-v1.json"
+    }
+  },
+  "frames": [],
+  "bridges": [],
+  "profile": null,
+  "expected": {
+    "core_outcome": "apl-invalid",
+    "relation_outcome": "relation-not-evaluated",
+    "failure_classes_contains": ["reference-failure"],
+    "diagnostics_contains": ["carrier-valid", "apl-present"],
+    "diagnostics_absent": ["apl-valid"]
+  }
+}
