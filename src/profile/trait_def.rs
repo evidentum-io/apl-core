@@ -72,6 +72,20 @@ pub type BridgeCheckResult = Result<(), Vec<DiagnosticCode>>;
 /// already accepted or rejected a bridge, so it can only add its own verdict on
 /// top of the Core verdict.
 ///
+/// # Contract
+///
+/// All hook methods MUST be pure with respect to their inputs: the same
+/// `Claim` / `Frame` / `RelationQuery` / `Bridge` MUST produce the same
+/// `Result`. Profiles MUST NOT perform I/O (filesystem, network), MUST NOT
+/// panic on any input, and MUST NOT mutate externally observable state from
+/// within a hook. This preserves the top-level determinism contract of
+/// `verify_receipt` and `evaluate_relation` (see `src/core/verify.rs` module
+/// docstring): identical inputs MUST yield identical outputs.
+///
+/// Profiles MAY carry internal immutable state (e.g. compiled allowed-aspect
+/// sets or configuration loaded at construction time). They MUST NOT rely on
+/// external dynamic state (process env, wall-clock time, RNG) inside a hook.
+///
 /// # Object Safety
 ///
 /// This trait is object-safe (`Box<dyn Profile>` and `&dyn Profile` both work)

@@ -61,10 +61,18 @@ pub enum FrameResolution {
 /// apl-core ships only the trait and [`InMemoryFrameResolver`]. Filesystem-
 /// and network-backed implementations live in `apl-cli`.
 ///
-/// # Object Safety
+/// # Contract
 ///
-/// This trait is object-safe. Use `&dyn FrameResolver` or
-/// `Arc<dyn FrameResolver>` to pass it across module boundaries.
+/// - `resolve` MUST be pure with respect to its input: the same hash MUST
+///   produce the same `FrameResolution` within a single verifier invocation.
+///   (A resolver that is re-queried across invocations MAY observe external
+///   store changes, but a single verification run MUST see a stable view.)
+/// - `resolve` MUST NOT panic on any input.
+/// - `resolve` MUST NOT mutate external state observable by callers.
+/// - Implementations that perform I/O (filesystem, network) MUST translate
+///   any failure into `FrameResolution::ResolverError` rather than panicking
+///   or propagating host errors. This preserves `verify_receipt`'s
+///   determinism contract (`src/core/verify.rs` module docstring).
 pub trait FrameResolver: Send + Sync {
     /// Look up a frame by its canonical identity hash.
     fn resolve(&self, hash: &Hash) -> FrameResolution;
@@ -98,10 +106,12 @@ pub enum BridgeResolution {
 ///
 /// The trait sees a flat lookup; the caller orchestrates source priority.
 ///
-/// # Object Safety
+/// # Contract
 ///
-/// This trait is object-safe. Use `&dyn BridgeResolver` or
-/// `Arc<dyn BridgeResolver>` to pass it across module boundaries.
+/// Same as [`FrameResolver`]: `resolve` MUST be pure within a single
+/// pairwise evaluation, MUST NOT panic, MUST NOT mutate externally
+/// observable state, and MUST surface any I/O failure as
+/// `BridgeResolution::ResolverError` rather than propagating host errors.
 pub trait BridgeResolver: Send + Sync {
     /// Look up a bridge by its canonical identity hash.
     fn resolve(&self, hash: &Hash) -> BridgeResolution;
