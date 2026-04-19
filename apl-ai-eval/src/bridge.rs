@@ -2,12 +2,12 @@
 //! Profile-specific diagnostics per §7.8.
 //!
 //! Full implementation is provided by AI-EVAL-BRIDGE-1. This module declares
-//! the function signature required by [`super::AiEvalProfile`].
+//! the function signature required by [`super::profile::AiEvalProfile`].
 
-use crate::core::bridge::Bridge;
-use crate::core::frame::Frame;
-use crate::core::relation::RelationQuery;
-use crate::profile::trait_def::BridgeCheckResult;
+use apl_core::core::bridge::Bridge;
+use apl_core::core::frame::Frame;
+use apl_core::core::relation::RelationQuery;
+use apl_core::profile::trait_def::BridgeCheckResult;
 
 /// Check whether `bridge` is applicable under the AI-Eval profile constraints
 /// (apl-ai-eval-profile.md §7.7).
@@ -35,11 +35,11 @@ pub fn check_ai_eval_bridge_applicability(
 #[cfg(test)]
 mod bridge_tests {
     use super::*;
-    use crate::core::bridge::Bridge;
-    use crate::core::frame::Frame;
-    use crate::core::relation::RelationQuery;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::bridge::Bridge;
+    use apl_core::core::frame::Frame;
+    use apl_core::core::relation::RelationQuery;
+    use apl_core::profile::trait_def::Profile;
     use serde_json::json;
 
     fn make_bridge() -> Bridge {

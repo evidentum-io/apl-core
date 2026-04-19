@@ -1,4 +1,5 @@
 [workspace]
+members = ["apl-ai-eval"]
 
 [package]
 name = "apl-core"
@@ -36,6 +37,5 @@ proptest = "1"
 pretty_assertions = "1"
 
 [features]
-default = ["profile-ai-eval"]
-profile-ai-eval = []
+default = []
 # Future profiles will gate here (e.g. profile-photojournalism).

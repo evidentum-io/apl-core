@@ -5,15 +5,23 @@
 
 use serde_json::Value;
 
-use crate::core::claim::{Claim, Statement};
-use crate::core::frame::{Frame, StringOrObject};
-use crate::core::hash::parse_hash_string;
-use crate::core::relation::RelationQuery;
-use crate::diagnostics::{self as D, DiagnosticCode};
-use crate::failure::FailureClass;
-use crate::profile::trait_def::{BridgeCheckResult, ProfileCheckResult, ProfileFailure};
+use apl_core::core::claim::{Claim, Statement};
+use apl_core::core::frame::{Frame, StringOrObject};
+use apl_core::core::hash::parse_hash_string;
+use apl_core::core::relation::RelationQuery;
+use apl_core::diagnostics::{
+    DiagnosticCode, APL_ASPECT_REFS_INVALID, APL_ASPECT_REF_OUT_OF_FRAME, APL_FRAME_ASPECT_INVALID,
+    APL_STATEMENT_INVALID, APL_SUBJECT_DIGEST_INVALID, APL_SUBJECT_ID_INVALID, APL_SUBJECT_INVALID,
+};
+use apl_core::profile::trait_def::{BridgeCheckResult, ProfileCheckResult, ProfileFailure};
+use apl_core::FailureClass;
 
-use super::{AI_EVAL_ALLOWED_ASPECTS, AI_EVAL_ALLOWED_UNITS};
+use crate::diagnostics::{
+    APL_AI_EVAL_BENCHMARK_ID_MISMATCH, APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH,
+    APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH, APL_AI_EVAL_PREDICATE_DISALLOWED,
+    APL_AI_EVAL_PREDICATE_INVALID, APL_AI_EVAL_RELATION_TYPE_INVALID,
+};
+use crate::profile::{AI_EVAL_ALLOWED_ASPECTS, AI_EVAL_ALLOWED_UNITS};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -31,7 +39,7 @@ pub fn check_claim(claim: &Claim) -> ProfileCheckResult {
     if claim.claim.statement.predicate != "score" {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_AI_EVAL_PREDICATE_DISALLOWED],
+            vec![APL_AI_EVAL_PREDICATE_DISALLOWED],
         ));
     }
 
@@ -39,7 +47,7 @@ pub fn check_claim(claim: &Claim) -> ProfileCheckResult {
     if claim.claim.aspect_refs.len() != 1 {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_ASPECT_REFS_INVALID],
+            vec![APL_ASPECT_REFS_INVALID],
         ));
     }
 
@@ -48,7 +56,7 @@ pub fn check_claim(claim: &Claim) -> ProfileCheckResult {
     if !AI_EVAL_ALLOWED_ASPECTS.contains(&aspect) {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_ASPECT_REFS_INVALID],
+            vec![APL_ASPECT_REFS_INVALID],
         ));
     }
 
@@ -78,19 +86,19 @@ pub fn cross_check(claim: &Claim, frame: &Frame) -> ProfileCheckResult {
     if frame.aspect.len() != 1 {
         return Err(profile_err(
             FailureClass::FrameFailure,
-            vec![D::APL_FRAME_ASPECT_INVALID],
+            vec![APL_FRAME_ASPECT_INVALID],
         ));
     }
     if claim.claim.aspect_refs.len() != 1 {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_ASPECT_REFS_INVALID],
+            vec![APL_ASPECT_REFS_INVALID],
         ));
     }
     if frame.aspect[0] != claim.claim.aspect_refs[0] {
         return Err(profile_err(
             FailureClass::SemanticLinkageFailure,
-            vec![D::APL_ASPECT_REF_OUT_OF_FRAME],
+            vec![APL_ASPECT_REF_OUT_OF_FRAME],
         ));
     }
 
@@ -114,7 +122,7 @@ pub fn cross_check(claim: &Claim, frame: &Frame) -> ProfileCheckResult {
         _ => {
             return Err(profile_err(
                 FailureClass::SemanticLinkageFailure,
-                vec![D::APL_AI_EVAL_BENCHMARK_ID_MISMATCH],
+                vec![APL_AI_EVAL_BENCHMARK_ID_MISMATCH],
             ));
         }
     }
@@ -141,23 +149,23 @@ pub fn check_pairwise_relation(
 ) -> BridgeCheckResult {
     // §7.1 — query predicate MUST be "score".
     if query.predicate != "score" {
-        return Err(vec![D::APL_AI_EVAL_PREDICATE_INVALID]);
+        return Err(vec![APL_AI_EVAL_PREDICATE_INVALID]);
     }
 
     // §7.1 — query relation_type MUST be one of {"score-delta", "repeatability-check"}.
     match query.relation_type.as_str() {
         "score-delta" | "repeatability-check" => {}
-        _ => return Err(vec![D::APL_AI_EVAL_RELATION_TYPE_INVALID]),
+        _ => return Err(vec![APL_AI_EVAL_RELATION_TYPE_INVALID]),
     }
 
     // §7.1 — left_aspects cardinality MUST be 1.
     if query.left_aspects.len() != 1 {
-        return Err(vec![D::APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH]);
+        return Err(vec![APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH]);
     }
 
     // §7.1 — right_aspects cardinality MUST be 1.
     if query.right_aspects.len() != 1 {
-        return Err(vec![D::APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH]);
+        return Err(vec![APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH]);
     }
 
     Ok(())
@@ -175,13 +183,13 @@ fn check_subject(claim: &Claim) -> ProfileCheckResult {
     let type_str = subj.get("type").and_then(Value::as_str).ok_or_else(|| {
         profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_SUBJECT_INVALID],
+            vec![APL_SUBJECT_INVALID],
         )
     })?;
     if type_str != "model-build" {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_SUBJECT_INVALID],
+            vec![APL_SUBJECT_INVALID],
         ));
     }
 
@@ -192,13 +200,13 @@ fn check_subject(claim: &Claim) -> ProfileCheckResult {
         .ok_or_else(|| {
             profile_err(
                 FailureClass::ClaimStructureFailure,
-                vec![D::APL_SUBJECT_DIGEST_INVALID],
+                vec![APL_SUBJECT_DIGEST_INVALID],
             )
         })?;
     parse_hash_string(digest_str).map_err(|_| {
         profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_SUBJECT_DIGEST_INVALID],
+            vec![APL_SUBJECT_DIGEST_INVALID],
         )
     })?;
 
@@ -207,13 +215,13 @@ fn check_subject(claim: &Claim) -> ProfileCheckResult {
         let s = id_v.as_str().ok_or_else(|| {
             profile_err(
                 FailureClass::ClaimStructureFailure,
-                vec![D::APL_SUBJECT_ID_INVALID],
+                vec![APL_SUBJECT_ID_INVALID],
             )
         })?;
         if s.is_empty() {
             return Err(profile_err(
                 FailureClass::ClaimStructureFailure,
-                vec![D::APL_SUBJECT_ID_INVALID],
+                vec![APL_SUBJECT_ID_INVALID],
             ));
         }
     }
@@ -224,13 +232,13 @@ fn check_subject(claim: &Claim) -> ProfileCheckResult {
             let s = v.as_str().ok_or_else(|| {
                 profile_err(
                     FailureClass::ClaimStructureFailure,
-                    vec![D::APL_SUBJECT_INVALID],
+                    vec![APL_SUBJECT_INVALID],
                 )
             })?;
             if s.is_empty() {
                 return Err(profile_err(
                     FailureClass::ClaimStructureFailure,
-                    vec![D::APL_SUBJECT_INVALID],
+                    vec![APL_SUBJECT_INVALID],
                 ));
             }
         }
@@ -244,7 +252,7 @@ fn check_content(statement: &Statement, aspect: &str) -> ProfileCheckResult {
     let content = statement.content.as_object().ok_or_else(|| {
         profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_STATEMENT_INVALID],
+            vec![APL_STATEMENT_INVALID],
         )
     })?;
 
@@ -260,7 +268,7 @@ fn check_content(statement: &Statement, aspect: &str) -> ProfileCheckResult {
         _ => {
             return Err(profile_err(
                 FailureClass::ClaimStructureFailure,
-                vec![D::APL_STATEMENT_INVALID],
+                vec![APL_STATEMENT_INVALID],
             ));
         }
     }
@@ -270,7 +278,7 @@ fn check_content(statement: &Statement, aspect: &str) -> ProfileCheckResult {
     if !AI_EVAL_ALLOWED_UNITS.contains(&unit.as_str()) {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_STATEMENT_INVALID],
+            vec![APL_STATEMENT_INVALID],
         ));
     }
 
@@ -281,7 +289,7 @@ fn check_content(statement: &Statement, aspect: &str) -> ProfileCheckResult {
             _ => {
                 return Err(profile_err(
                     FailureClass::ClaimStructureFailure,
-                    vec![D::APL_STATEMENT_INVALID],
+                    vec![APL_STATEMENT_INVALID],
                 ));
             }
         }
@@ -292,7 +300,7 @@ fn check_content(statement: &Statement, aspect: &str) -> ProfileCheckResult {
         if agg.as_str().map(str::is_empty).unwrap_or(true) {
             return Err(profile_err(
                 FailureClass::ClaimStructureFailure,
-                vec![D::APL_STATEMENT_INVALID],
+                vec![APL_STATEMENT_INVALID],
             ));
         }
     }
@@ -308,7 +316,7 @@ fn check_content(statement: &Statement, aspect: &str) -> ProfileCheckResult {
     if !metric_ok {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_STATEMENT_INVALID],
+            vec![APL_STATEMENT_INVALID],
         ));
     }
 
@@ -336,13 +344,13 @@ fn non_empty_string(
     let s = m.get(key).and_then(Value::as_str).ok_or_else(|| {
         profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_STATEMENT_INVALID],
+            vec![APL_STATEMENT_INVALID],
         )
     })?;
     if s.is_empty() {
         return Err(profile_err(
             FailureClass::ClaimStructureFailure,
-            vec![D::APL_STATEMENT_INVALID],
+            vec![APL_STATEMENT_INVALID],
         ));
     }
     Ok(s.to_owned())
@@ -363,8 +371,14 @@ fn profile_err(failure_class: FailureClass, diagnostics: Vec<DiagnosticCode>) ->
 #[cfg(test)]
 mod claim_tests {
     use super::*;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::claim::Claim;
+    use apl_core::diagnostics::{
+        APL_ASPECT_REFS_INVALID, APL_STATEMENT_INVALID, APL_SUBJECT_DIGEST_INVALID,
+        APL_SUBJECT_INVALID,
+    };
+    use apl_core::profile::trait_def::Profile;
+    use apl_core::FailureClass;
     use serde_json::json;
 
     fn h(b: u8) -> String {
@@ -434,9 +448,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err
-            .diagnostics
-            .contains(&D::APL_AI_EVAL_PREDICATE_DISALLOWED));
+        assert!(err.diagnostics.contains(&APL_AI_EVAL_PREDICATE_DISALLOWED));
     }
 
     // AC2: aspect_refs.len() != 1 → ClaimStructureFailure.
@@ -467,7 +479,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_ASPECT_REFS_INVALID));
+        assert!(err.diagnostics.contains(&APL_ASPECT_REFS_INVALID));
     }
 
     // AC3: aspect not in allowed set.
@@ -498,7 +510,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_ASPECT_REFS_INVALID));
+        assert!(err.diagnostics.contains(&APL_ASPECT_REFS_INVALID));
     }
 
     // AC4: subject.type != "model-build".
@@ -529,7 +541,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_INVALID));
     }
 
     // AC4: subject.type missing.
@@ -559,7 +571,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_INVALID));
     }
 
     // AC5: artifact_digest missing.
@@ -589,7 +601,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_DIGEST_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_DIGEST_INVALID));
     }
 
     // AC6: artifact_digest not matching sha256:<hex>.
@@ -620,7 +632,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_DIGEST_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_DIGEST_INVALID));
     }
 
     // AC7: unit not in allowed set.
@@ -651,7 +663,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // AC8: aspect/metric mismatch.
@@ -682,7 +694,7 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // AC9: accepts pass@k when aspect = "pass-rate".
@@ -741,7 +753,7 @@ mod claim_tests {
         });
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // AC15: "Invalid Profile Example" from §12 — missing subject.type and subject.artifact_digest.
@@ -768,15 +780,19 @@ mod claim_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_INVALID));
     }
 }
 
 #[cfg(test)]
 mod cross_check_tests {
     use super::*;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::claim::Claim;
+    use apl_core::core::frame::Frame;
+    use apl_core::diagnostics::APL_ASPECT_REF_OUT_OF_FRAME;
+    use apl_core::profile::trait_def::Profile;
+    use apl_core::FailureClass;
     use serde_json::json;
 
     fn h(b: u8) -> String {
@@ -840,9 +856,7 @@ mod cross_check_tests {
         let f = make_frame("accuracy", "gpqa");
         let err = AiEvalProfile.cross_check(&c, &f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::SemanticLinkageFailure);
-        assert!(err
-            .diagnostics
-            .contains(&D::APL_AI_EVAL_BENCHMARK_ID_MISMATCH));
+        assert!(err.diagnostics.contains(&APL_AI_EVAL_BENCHMARK_ID_MISMATCH));
     }
 
     // AC13: aspect mismatch → SemanticLinkageFailure + AplAspectRefOutOfFrame.
@@ -852,7 +866,7 @@ mod cross_check_tests {
         let f = make_frame("pass-rate", "mmlu");
         let err = AiEvalProfile.cross_check(&c, &f).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::SemanticLinkageFailure);
-        assert!(err.diagnostics.contains(&D::APL_ASPECT_REF_OUT_OF_FRAME));
+        assert!(err.diagnostics.contains(&APL_ASPECT_REF_OUT_OF_FRAME));
     }
 
     // AC14 partial: matching claim+frame accepted.
@@ -867,9 +881,11 @@ mod cross_check_tests {
 #[cfg(test)]
 mod pairwise_gate_tests {
     use super::*;
-    use crate::core::relation::RelationQuery;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::claim::Claim;
+    use apl_core::core::frame::Frame;
+    use apl_core::core::relation::RelationQuery;
+    use apl_core::profile::trait_def::Profile;
     use serde_json::json;
 
     fn h(b: u8) -> String {
@@ -939,7 +955,7 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&D::APL_AI_EVAL_PREDICATE_INVALID));
+        assert!(err.contains(&APL_AI_EVAL_PREDICATE_INVALID));
     }
 
     // AC17: relation_type not in allowed set.
@@ -951,7 +967,7 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&D::APL_AI_EVAL_RELATION_TYPE_INVALID));
+        assert!(err.contains(&APL_AI_EVAL_RELATION_TYPE_INVALID));
     }
 
     // AC16: cross-frame path also rejects bad predicate.
@@ -975,7 +991,7 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f1, &f2, &q)
             .unwrap_err();
-        assert!(err.contains(&D::APL_AI_EVAL_PREDICATE_INVALID));
+        assert!(err.contains(&APL_AI_EVAL_PREDICATE_INVALID));
     }
 
     // AC17: cross-frame path also rejects disallowed relation_type.
@@ -987,7 +1003,7 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&D::APL_AI_EVAL_RELATION_TYPE_INVALID));
+        assert!(err.contains(&APL_AI_EVAL_RELATION_TYPE_INVALID));
     }
 
     // AC16+AC17: accepts score-delta.
@@ -1026,7 +1042,7 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&D::APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH));
+        assert!(err.contains(&APL_AI_EVAL_BRIDGE_SOURCE_ASPECT_MISMATCH));
     }
 
     // AC18: right_aspects cardinality != 1.
@@ -1043,7 +1059,7 @@ mod pairwise_gate_tests {
         let err = AiEvalProfile
             .check_pairwise_relation(&c, &c, &f, &f, &q)
             .unwrap_err();
-        assert!(err.contains(&D::APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH));
+        assert!(err.contains(&APL_AI_EVAL_BRIDGE_TARGET_ASPECT_MISMATCH));
     }
 }
 
@@ -1090,8 +1106,12 @@ mod is_passat_tests {
 #[cfg(test)]
 mod cross_check_guard_tests {
     use super::*;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::claim::Claim;
+    use apl_core::core::frame::Frame;
+    use apl_core::diagnostics::{APL_ASPECT_REFS_INVALID, APL_FRAME_ASPECT_INVALID};
+    use apl_core::profile::trait_def::Profile;
+    use apl_core::FailureClass;
     use serde_json::json;
 
     fn h(b: u8) -> String {
@@ -1099,9 +1119,6 @@ mod cross_check_guard_tests {
     }
 
     fn make_claim_two_aspects() -> Claim {
-        // Bypasses aspect-refs cardinality check by calling cross_check directly
-        // after constructing a claim that core accepts (it only checks structural).
-        // We rely on the fact that Claim::parse accepts any array for aspect_refs.
         let v = json!({
             "version": "0.1",
             "claim": {
@@ -1127,7 +1144,7 @@ mod cross_check_guard_tests {
         Claim::parse(&v).expect("claim must parse at core level")
     }
 
-    fn make_frame_two_aspects() -> crate::core::frame::Frame {
+    fn make_frame_two_aspects() -> Frame {
         let v = json!({
             "version": "0.1",
             "observer": "acme",
@@ -1137,10 +1154,10 @@ mod cross_check_guard_tests {
             "invariance": ["i"],
             "exclusions": ["e"]
         });
-        crate::core::frame::Frame::parse(&v).expect("frame with two aspects must parse")
+        Frame::parse(&v).expect("frame with two aspects must parse")
     }
 
-    fn make_frame_one_aspect(aspect: &str, benchmark_id: &str) -> crate::core::frame::Frame {
+    fn make_frame_one_aspect(aspect: &str, benchmark_id: &str) -> Frame {
         let v = json!({
             "version": "0.1",
             "observer": { "id": "acme-eval-lab" },
@@ -1161,7 +1178,7 @@ mod cross_check_guard_tests {
                 "no-out-of-scope-generalization-claim"
             ]
         });
-        crate::core::frame::Frame::parse(&v).expect("valid frame fixture")
+        Frame::parse(&v).expect("valid frame fixture")
     }
 
     fn make_claim_one_aspect(aspect: &str, benchmark_id: &str) -> Claim {
@@ -1197,7 +1214,7 @@ mod cross_check_guard_tests {
         let frame = make_frame_two_aspects();
         let err = cross_check(&claim, &frame).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::FrameFailure);
-        assert!(err.diagnostics.contains(&D::APL_FRAME_ASPECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_FRAME_ASPECT_INVALID));
     }
 
     // cross_check defensive guard: claim.aspect_refs.len() != 1 → ClaimStructureFailure.
@@ -1207,15 +1224,13 @@ mod cross_check_guard_tests {
         let frame = make_frame_one_aspect("accuracy", "mmlu");
         let err = cross_check(&claim, &frame).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_ASPECT_REFS_INVALID));
+        assert!(err.diagnostics.contains(&APL_ASPECT_REFS_INVALID));
     }
 
     // cross_check: frame.scope is not an object → SemanticLinkageFailure + AplAiEvalBenchmarkIdMismatch.
-    // (frame_bid is None when scope is a string → benchmark_id linkage fails)
     #[test]
     fn cross_check_rejects_when_frame_scope_has_no_benchmark_id() {
         let claim = make_claim_one_aspect("accuracy", "mmlu");
-        // Frame with scope as plain string — no benchmark_id extractable.
         let frame_v = json!({
             "version": "0.1",
             "observer": "acme",
@@ -1225,21 +1240,20 @@ mod cross_check_guard_tests {
             "invariance": ["i"],
             "exclusions": ["e"]
         });
-        let frame =
-            crate::core::frame::Frame::parse(&frame_v).expect("frame with string scope parses");
+        let frame = Frame::parse(&frame_v).expect("frame with string scope parses");
         let err = AiEvalProfile.cross_check(&claim, &frame).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::SemanticLinkageFailure);
-        assert!(err
-            .diagnostics
-            .contains(&D::APL_AI_EVAL_BENCHMARK_ID_MISMATCH));
+        assert!(err.diagnostics.contains(&APL_AI_EVAL_BENCHMARK_ID_MISMATCH));
     }
 }
 
 #[cfg(test)]
 mod subject_optional_fields_tests {
-    use super::*;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::claim::Claim;
+    use apl_core::diagnostics::APL_SUBJECT_INVALID;
+    use apl_core::profile::trait_def::Profile;
+    use apl_core::FailureClass;
     use serde_json::json;
 
     fn h(b: u8) -> String {
@@ -1247,7 +1261,6 @@ mod subject_optional_fields_tests {
     }
 
     // §4.2 — optional field build_id is a non-string → AplSubjectInvalid.
-    // (Core does not validate build_id, so it passes through Claim::parse.)
     #[test]
     fn rejects_build_id_non_string() {
         let v = json!({
@@ -1276,7 +1289,7 @@ mod subject_optional_fields_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_INVALID));
     }
 
     // §4.2 — optional field provider is an empty string → AplSubjectInvalid.
@@ -1308,7 +1321,7 @@ mod subject_optional_fields_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_INVALID));
     }
 
     // §4.2 — optional field model_family is a non-string → AplSubjectInvalid.
@@ -1340,15 +1353,17 @@ mod subject_optional_fields_tests {
         let c = Claim::parse(&v).expect("claim must parse at core level");
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_SUBJECT_INVALID));
+        assert!(err.diagnostics.contains(&APL_SUBJECT_INVALID));
     }
 }
 
 #[cfg(test)]
 mod content_validation_tests {
-    use super::*;
-    use crate::profile::ai_eval::AiEvalProfile;
-    use crate::profile::trait_def::Profile;
+    use crate::profile::AiEvalProfile;
+    use apl_core::core::claim::Claim;
+    use apl_core::diagnostics::APL_STATEMENT_INVALID;
+    use apl_core::profile::trait_def::Profile;
+    use apl_core::FailureClass;
     use serde_json::json;
 
     fn h(b: u8) -> String {
@@ -1382,7 +1397,7 @@ mod content_validation_tests {
         let c = base_claim_with_content(json!("string-content"));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
         assert_eq!(err.failure_class, FailureClass::ClaimStructureFailure);
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // benchmark_id missing → AplStatementInvalid.
@@ -1394,7 +1409,7 @@ mod content_validation_tests {
             "unit": "fraction"
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // benchmark_id empty string → AplStatementInvalid.
@@ -1407,7 +1422,7 @@ mod content_validation_tests {
             "unit": "fraction"
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // metric_id missing → AplStatementInvalid.
@@ -1419,7 +1434,7 @@ mod content_validation_tests {
             "unit": "fraction"
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // value missing → AplStatementInvalid.
@@ -1431,7 +1446,7 @@ mod content_validation_tests {
             "unit": "fraction"
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // value is a string (not number) → AplStatementInvalid.
@@ -1444,7 +1459,7 @@ mod content_validation_tests {
             "unit": "fraction"
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // sample_count = 0 → AplStatementInvalid.
@@ -1458,7 +1473,7 @@ mod content_validation_tests {
             "sample_count": 0
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // sample_count is a string → AplStatementInvalid.
@@ -1472,7 +1487,7 @@ mod content_validation_tests {
             "sample_count": "many"
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // aggregation = "" → AplStatementInvalid.
@@ -1486,7 +1501,7 @@ mod content_validation_tests {
             "aggregation": ""
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // aggregation = 42 (non-string) → AplStatementInvalid.
@@ -1500,7 +1515,7 @@ mod content_validation_tests {
             "aggregation": 42
         }));
         let err = AiEvalProfile.check_claim(&c).unwrap_err();
-        assert!(err.diagnostics.contains(&D::APL_STATEMENT_INVALID));
+        assert!(err.diagnostics.contains(&APL_STATEMENT_INVALID));
     }
 
     // All four aspect/metric match arms: judge-score, pass-rate (literal), tool-success-rate.

@@ -1329,7 +1329,7 @@ mod tests {
             _rf: &Frame,
             _q: &RelationQuery,
         ) -> Result<(), Vec<DiagnosticCode>> {
-            Err(vec![D::APL_AI_EVAL_RELATION_TYPE_INVALID])
+            Err(vec![DiagnosticCode::new("test-profile-pairwise-rejected")])
         }
     }
 
@@ -1359,7 +1359,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&D::APL_AI_EVAL_RELATION_TYPE_INVALID));
+            .contains(&DiagnosticCode::new("test-profile-pairwise-rejected")));
     }
 
     #[test]
@@ -1452,7 +1452,7 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&D::APL_AI_EVAL_RELATION_TYPE_INVALID));
+            .contains(&DiagnosticCode::new("test-profile-pairwise-rejected")));
         assert!(!out.diagnostics.contains(&D::APL_SAME_FRAME));
     }
 
@@ -1902,7 +1902,7 @@ mod tests {
                 _right_frame: &Frame,
                 _query: &RelationQuery,
             ) -> Result<(), Vec<DiagnosticCode>> {
-                Err(vec![D::APL_AI_EVAL_BRIDGE_KIND_INVALID])
+                Err(vec![DiagnosticCode::new("test-profile-bridge-rejected")])
             }
         }
 
@@ -1955,6 +1955,6 @@ mod tests {
         assert_eq!(out.relation_outcome, RelationOutcome::Incomparable);
         assert!(out
             .diagnostics
-            .contains(&D::APL_AI_EVAL_BRIDGE_KIND_INVALID));
+            .contains(&DiagnosticCode::new("test-profile-bridge-rejected")));
     }
 }

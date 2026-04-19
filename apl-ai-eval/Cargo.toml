@@ -1,0 +1,23 @@
+[package]
+name = "apl-ai-eval"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75.0"
+license = "Apache-2.0"
+description = "AI-Eval vertical profile for APL Protocol (reference implementation of APL/AI-Eval v0.1)"
+repository = "https://github.com/evidentum-io/apl-core"
+keywords = ["apl", "ai-eval", "verification", "profile"]
+categories = ["cryptography"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+apl-core = { path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+proptest = "1"
+pretty_assertions = "1"
+hex = "0.4"
