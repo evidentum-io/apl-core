@@ -1,0 +1,167 @@
+{
+  "name": "ats-bridge-source-index-float",
+  "description": "Bridge with source_index as 0.5 (float). Rejected because as_i64() returns None for non-integer. Expected: incomparable.",
+  "source": "fabricated",
+  "left": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "id": "x"
+        },
+        "aspect_refs": [
+          "nuclear_capability_assessment"
+        ],
+        "statement": {
+          "predicate": "assess",
+          "content": {
+            "judgment": "X"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "bridge_refs": [
+        {
+          "hash": "<BRIDGE_HASH:0>"
+        }
+      ]
+    }
+  },
+  "right": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "id": "x"
+        },
+        "aspect_refs": [
+          "nuclear_capability_assessment"
+        ],
+        "statement": {
+          "predicate": "assess",
+          "content": {
+            "judgment": "X"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:1>"
+      },
+      "bridge_refs": [
+        {
+          "hash": "<BRIDGE_HASH:0>"
+        }
+      ]
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "CIA/DI",
+      "procedure": "ACH",
+      "aspect": [
+        "nuclear_capability_assessment"
+      ],
+      "scope": "DPRK Q2 2026",
+      "invariance": [
+        "framework"
+      ],
+      "exclusions": [
+        "no delivery systems claim"
+      ],
+      "profile": "APL/ATS",
+      "source_descriptors": [
+        {
+          "source_type": "HUMINT"
+        }
+      ],
+      "methodology_ref": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "confidence_level": "moderate",
+      "classification_marking": "TS//SCI//NOFORN"
+    },
+    {
+      "version": "0.1",
+      "observer": "NSA/RD",
+      "procedure": "ACH",
+      "aspect": [
+        "nuclear_capability_assessment"
+      ],
+      "scope": "DPRK Q2 2026",
+      "invariance": [
+        "framework"
+      ],
+      "exclusions": [
+        "no delivery systems claim"
+      ],
+      "profile": "APL/ATS",
+      "source_descriptors": [
+        {
+          "source_type": "SIGINT"
+        }
+      ],
+      "methodology_ref": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "confidence_level": "high",
+      "classification_marking": "TS//SI//NOFORN"
+    }
+  ],
+  "bridges": [],
+  "supplied_bridges": [
+    {
+      "version": "0.1",
+      "source_frame": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "target_frame": {
+        "hash": "<FRAME_HASH:1>"
+      },
+      "comparison_scope": {
+        "source_aspects": [
+          "nuclear_capability_assessment"
+        ],
+        "target_aspects": [
+          "nuclear_capability_assessment"
+        ],
+        "relation_type": "alternative-analysis",
+        "source_descriptors": [
+          {
+            "source_index": 0.5,
+            "assumptions": [
+              "x"
+            ]
+          }
+        ]
+      },
+      "assumptions": [],
+      "losses": []
+    }
+  ],
+  "query": {
+    "left_aspects": [
+      "nuclear_capability_assessment"
+    ],
+    "right_aspects": [
+      "nuclear_capability_assessment"
+    ],
+    "predicate": "assess",
+    "relation_type": "alternative-analysis"
+  },
+  "profile": "ats",
+  "expected": {
+    "left_core": "apl-valid",
+    "right_core": "apl-valid",
+    "relation_outcome": "incomparable",
+    "diagnostics_contains": [
+      "apl-cross-frame",
+      "apl-ats-bridge-no-descriptor-map"
+    ],
+    "diagnostics_absent": []
+  }
+}

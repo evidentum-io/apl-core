@@ -1,0 +1,103 @@
+{
+  "name": "ats-same-frame-comparable",
+  "description": "Two ATS receipts referencing the same frame. No bridge is needed — the pair is same-frame-comparable.",
+  "source": "fabricated",
+  "left": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "id": "x"
+        },
+        "aspect_refs": [
+          "nuclear_capability_assessment"
+        ],
+        "statement": {
+          "predicate": "assess",
+          "content": {
+            "judgment": "X"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "right": {
+    "metadata_apl": {
+      "version": "0.1",
+      "claim": {
+        "kind": "observation",
+        "subject": {
+          "id": "x"
+        },
+        "aspect_refs": [
+          "nuclear_capability_assessment"
+        ],
+        "statement": {
+          "predicate": "assess",
+          "content": {
+            "judgment": "X"
+          }
+        }
+      },
+      "frame_ref": {
+        "hash": "<FRAME_HASH:0>"
+      }
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "CIA/DI",
+      "procedure": "ACH",
+      "aspect": [
+        "nuclear_capability_assessment"
+      ],
+      "scope": "DPRK Q2 2026",
+      "invariance": [
+        "framework"
+      ],
+      "exclusions": [
+        "no delivery systems claim"
+      ],
+      "profile": "APL/ATS",
+      "source_descriptors": [
+        {
+          "source_type": "HUMINT"
+        }
+      ],
+      "methodology_ref": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "confidence_level": "moderate",
+      "classification_marking": "TS//SCI//NOFORN"
+    }
+  ],
+  "bridges": [],
+  "supplied_bridges": [],
+  "query": {
+    "left_aspects": [
+      "nuclear_capability_assessment"
+    ],
+    "right_aspects": [
+      "nuclear_capability_assessment"
+    ],
+    "predicate": "assess",
+    "relation_type": "alternative-analysis"
+  },
+  "profile": "ats",
+  "expected": {
+    "left_core": "apl-valid",
+    "right_core": "apl-valid",
+    "relation_outcome": "same-frame-comparable",
+    "diagnostics_contains": [
+      "apl-same-frame"
+    ],
+    "diagnostics_absent": [
+      "apl-ats-bridge-no-descriptor-map"
+    ]
+  }
+}

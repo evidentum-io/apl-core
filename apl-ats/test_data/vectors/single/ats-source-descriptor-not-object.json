@@ -1,0 +1,65 @@
+{
+  "name": "ats-source-descriptor-not-object",
+  "description": "ATS frame with a source_descriptors element that is a string, not an object. requires each element to be a JSON object.",
+  "source": "fabricated",
+  "metadata_apl": {
+    "version": "0.1",
+    "claim": {
+      "kind": "observation",
+      "subject": {
+        "id": "DPRK-nuclear-assessment-2026"
+      },
+      "aspect_refs": [
+        "nuclear_capability_assessment"
+      ],
+      "statement": {
+        "predicate": "assess",
+        "content": {
+          "judgment": "DPRK has a baseline nuclear capability"
+        }
+      }
+    },
+    "frame_ref": {
+      "hash": "<FRAME_HASH:0>"
+    }
+  },
+  "frames": [
+    {
+      "version": "0.1",
+      "observer": "CIA/DI/Office of Transnational Issues",
+      "procedure": "structured-analytic-technique/ACH",
+      "instrument": "analyst-judgment",
+      "aspect": [
+        "nuclear_capability_assessment"
+      ],
+      "scope": "DPRK nuclear program Q2 2026",
+      "invariance": [
+        "assessment framework",
+        "source evaluation criteria"
+      ],
+      "exclusions": [
+        "no claim about delivery systems readiness",
+        "no claim about fissile material stockpile quantity"
+      ],
+      "profile": "APL/ATS",
+      "source_descriptors": [
+        "string"
+      ],
+      "methodology_ref": {
+        "hash": "<FRAME_HASH:0>"
+      },
+      "confidence_level": "moderate",
+      "classification_marking": "TS//SCI//NOFORN"
+    }
+  ],
+  "bridges": [],
+  "profile": "ats",
+  "expected": {
+    "core_outcome": "apl-invalid",
+    "relation_outcome": "relation-not-evaluated",
+    "diagnostics_contains": [
+      "apl-ats-invalid-source-descriptor"
+    ],
+    "diagnostics_absent": []
+  }
+}
