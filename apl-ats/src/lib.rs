@@ -2,11 +2,11 @@
 
 #![deny(unsafe_code)]
 
-pub mod diagnostics;
-mod register;
-mod frame;
 mod bridge;
+pub mod diagnostics;
+pub mod frame;
 mod profile;
+mod register;
 
 pub use profile::AtsProfile;
 pub use register::register;
