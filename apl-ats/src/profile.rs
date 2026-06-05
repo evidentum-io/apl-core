@@ -1,9 +1,11 @@
 //! Profile trait implementation.
 
+use apl_core::core::bridge::Bridge;
 use apl_core::core::frame::Frame;
-use apl_core::profile::trait_def::{Profile, ProfileCheckResult};
+use apl_core::core::relation::RelationQuery;
+use apl_core::profile::trait_def::{BridgeCheckResult, Profile, ProfileCheckResult};
 
-use crate::frame;
+use crate::{bridge, frame};
 
 /// Analytic tradecraft standards profile marker.
 ///
@@ -18,6 +20,16 @@ impl Profile for AtsProfile {
 
     fn check_frame(&self, f: &Frame) -> ProfileCheckResult {
         frame::check_frame(f)
+    }
+
+    fn check_bridge_applicability(
+        &self,
+        b: &Bridge,
+        source_frame: &Frame,
+        target_frame: &Frame,
+        query: &RelationQuery,
+    ) -> BridgeCheckResult {
+        bridge::check_bridge_applicability(b, source_frame, target_frame, query)
     }
 }
 
