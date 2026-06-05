@@ -1,7 +1,5 @@
-# Internal planning and implementation specs — not for public repo
 docs-md/
-
-
-# Added by cargo
+.githooks/
+scripts/
 
 /target

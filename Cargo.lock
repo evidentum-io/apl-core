@@ -30,6 +30,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "apl-ats"
+version = "0.1.0"
+dependencies = [
+ "apl-core",
+ "hex",
+ "pretty_assertions",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apl-core"
 version = "0.19.1"
 dependencies = [

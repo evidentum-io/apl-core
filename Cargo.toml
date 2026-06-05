@@ -1,5 +1,5 @@
 [workspace]
-members = ["apl-ai-eval"]
+members = ["apl-ai-eval", "apl-ats"]
 
 [package]
 name = "apl-core"
@@ -13,20 +13,16 @@ keywords = ["apl", "frame-bound-observation", "verification", "content-addressed
 categories = ["cryptography", "data-structures"]
 
 [dependencies]
-# Peer crate: carrier reference + JCS implementation.
-# apl-core uses atl-core for:
-#   - `atl_core::jcs::canonicalize` / `canonicalize_and_hash`
-#   - reference carrier model only; the actual CarrierVerifier impl lives in apl-cli.
-atl-core = { path = "../../../evidentum.io/atl-core", version = "0.23" }
+atl-core = { path = "../../vendor/atl-core", version = "0.23" }
 
 # JSON and serialization.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 
-# SHA-256 for recomputing canonical hash of JCS bytes (identity check, apl-spec.md §9.5).
+# SHA-256 for canonical hash computation.
 sha2 = "0.10"
 
-# Hex for parsing "sha256:<hex>" strings (apl-spec.md §4.2).
+# Hex encoding and decoding utilities.
 hex = "0.4"
 
 # Error derive macros.
@@ -38,4 +34,4 @@ pretty_assertions = "1"
 
 [features]
 default = []
-# Future profiles will gate here (e.g. profile-photojournalism).
+# Feature flags for optional profiles.
