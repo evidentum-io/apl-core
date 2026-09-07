@@ -1,10 +1,10 @@
 [package]
 name = "apl-ai-eval"
-version = "0.3.1"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75.0"
 license = "Apache-2.0"
-description = "AI-Eval vertical profile for APL Protocol (reference implementation of APL/AI-Eval v0.1)"
+description = "AI-Eval vertical profile for APL Protocol (reference implementation of APL/AI-Eval v1.0)"
 repository = "https://github.com/evidentum-io/apl-core"
 keywords = ["apl", "ai-eval", "verification", "profile"]
 categories = ["cryptography"]

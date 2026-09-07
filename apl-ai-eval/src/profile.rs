@@ -1,4 +1,4 @@
-//! APL/AI-Eval v0.1 profile per apl-ai-eval-profile.md.
+//! APL/AI-Eval v1.0 profile per apl-ai-eval-profile.md.
 
 use apl_core::core::bridge::Bridge;
 use apl_core::core::claim::Claim;
@@ -24,7 +24,7 @@ pub(crate) const AI_EVAL_REQUIRED_EXCLUSIONS: &[&str] = &[
     "no-out-of-scope-generalization-claim",
 ];
 
-/// The `APL/AI-Eval v0.1` profile.
+/// The `APL/AI-Eval v1.0` profile.
 ///
 /// Implements the claim-level, frame-level, cross-check, and pairwise relation
 /// hooks defined in `apl-ai-eval-profile.md`. The profile is stateless: a single
@@ -37,14 +37,14 @@ pub(crate) const AI_EVAL_REQUIRED_EXCLUSIONS: &[&str] = &[
 /// use apl_core::profile::trait_def::Profile;
 ///
 /// let profile = AiEvalProfile;
-/// assert_eq!(profile.id(), "apl/ai-eval/v0.1");
+/// assert_eq!(profile.id(), "apl/ai-eval/v1.0");
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AiEvalProfile;
 
 impl Profile for AiEvalProfile {
     fn id(&self) -> &'static str {
-        "apl/ai-eval/v0.1"
+        "apl/ai-eval/v1.0"
     }
 
     /// Claim-level checks per apl-ai-eval-profile.md §§3-4, §6, §8.
@@ -138,7 +138,7 @@ mod mod_tests {
     #[test]
     fn profile_id_returns_expected_string() {
         let profile = AiEvalProfile;
-        assert_eq!(profile.id(), "apl/ai-eval/v0.1");
+        assert_eq!(profile.id(), "apl/ai-eval/v1.0");
     }
 
     // Default trait produces an instance with the correct id.
@@ -147,14 +147,14 @@ mod mod_tests {
     fn default_instance_has_correct_id() {
         #[allow(clippy::default_constructed_unit_structs)]
         let profile = AiEvalProfile::default();
-        assert_eq!(profile.id(), "apl/ai-eval/v0.1");
+        assert_eq!(profile.id(), "apl/ai-eval/v1.0");
     }
 
     // Profile::id() works via &dyn Profile.
     #[test]
     fn id_works_via_dyn_profile() {
         let profile: &dyn Profile = &AiEvalProfile;
-        assert_eq!(profile.id(), "apl/ai-eval/v0.1");
+        assert_eq!(profile.id(), "apl/ai-eval/v1.0");
     }
 
     // check_bridge_applicability via &dyn Profile returns Ok(()) for a

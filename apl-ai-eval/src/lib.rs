@@ -1,4 +1,4 @@
-//! AI-Eval profile for APL Protocol — reference implementation of `APL/AI-Eval v0.1`.
+//! AI-Eval profile for APL Protocol — reference implementation of `APL/AI-Eval v1.0`.
 
 #![deny(unsafe_code)]
 
