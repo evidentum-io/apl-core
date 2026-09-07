@@ -1,7 +1,7 @@
 //! AI-Eval claim profile checks per apl-ai-eval-profile.md §§3-4, §6, §8.
 //!
 //! This module provides the claim-level, cross-check, and pairwise-gate
-//! implementations for the `APL/AI-Eval v0.1` profile.
+//! implementations for the `APL/AI-Eval v1.0` profile.
 
 use serde_json::Value;
 
